@@ -1,0 +1,57 @@
+看/sys目录经常看到bus device driver class. 这也是网上大量说的驱动驱动模型。这些的关系得熟悉得明白吧。是的。今天我先不整他们的关系。先逐个击破，然后再统一来理清楚他们之间的关系。
+那今天我们来看看class.c这个文件。
+class刚接触的时候好迷糊，class是关键字，是类型，不是，是一类事物，以一种归类。是把相同类型的device归到一起的一个对象。那我们来看看class是如何注册的。不管怎么说。class也是形成一个环。
+
+一个双向闭环链表。同样，class之间也是通过kset kobject关联起来的。那我们具体看看
+int __class_register(struct class *cls, struct lock_class_key *key)
+{
+	struct subsys_private *cp;  // subsys_private用的是和bus 一样的结构体。看来是共用了这个类型。为什么要共用呢？ bus是关联了device driver. 那看来class也是关联了device driver. 嗯
+    有点道理。只是class不关心driver.他只是把相同类的device关联起来了。如何关联呢？看下文
+    
+	int error;
+
+	pr_debug("device class '%s': registering\n", cls->name);
+
+	cp = kzalloc(sizeof(*cp), GFP_KERNEL); // 分配空间
+	if (!cp)
+		return -ENOMEM;
+	klist_init(&cp->klist_devices, klist_class_dev_get, klist_class_dev_put); //初始化
+	INIT_LIST_HEAD(&cp->class_interfaces);
+	kset_init(&cp->glue_dirs);
+	__mutex_init(&cp->class_mutex, "struct class mutex", key);
+	error = kobject_set_name(&cp->subsys.kobj, "%s", cls->name); //设置kobject的名字。这个名字也同时也sysfs目录的名字。
+	if (error) {
+		kfree(cp);
+		return error;
+	}
+
+	/* set the default /sys/dev directory for devices of this class */
+	if (!cls->dev_kobj)
+		cls->dev_kobj = sysfs_dev_char_kobj;
+
+#if defined(CONFIG_BLOCK)
+	/* let the block class directory show up in the root of sysfs */
+	if (!sysfs_deprecated || cls != &block_class)
+		cp->subsys.kobj.kset = class_kset;
+#else
+	cp->subsys.kobj.kset = class_kset;  //这里就是开始指定kobj的kset类。位下一步add打基础了。
+#endif
+	cp->subsys.kobj.ktype = &class_ktype;
+	cp->class = cls;
+	cls->p = cp;
+
+	error = kset_register(&cp->subsys);  //这里就是开始真正的add了。这里有个简单的常识需要分享下。
+    我们经常看到kobje_****_add 也经常看到kset_register这有什么关系吗？ 肯定不难，无非就是kobj和kset的关系。 其他是的功能是一样的。但是有点差别。在注册子系统subsystem的时候用
+    kset_register. 那什么是子系统呢？ 就是别的对象能挂载在他下面的就叫子系统。就像class. 各个具体class可以挂在各个具体的device. 各个具体的bus可以挂载各个device和 driver。这些我们可以
+    称之为subsystem.
+    
+	if (error) {
+		kfree(cp);
+		return error;
+	}
+	error = add_class_attrs(class_get(cls));  //创建了sysfs节点。
+	class_put(cls);
+	return error;
+}
+
+嗯，就这样，通过这个东西就把各个具体的class关联起来，围城双向闭环链表了。

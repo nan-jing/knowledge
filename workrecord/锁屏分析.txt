@@ -1,0 +1,531 @@
+锁屏界面的加载通常在android中有两种方式触发：android系统开机和screenOff(灭屏)后，再screenOn;
+
+先来看
+
+android系统开机时候的锁屏加载流程：
+首先在系统启动过程中，会进入到SystemServer.java的startOtherServices()方法：
+初始化WindowManagerService;
+wm = WindowManagerService.main(context, inputManager,
+                    mFactoryTestMode != FactoryTest.FACTORY_TEST_LOW_LEVEL,
+                    !mFirstBoot, mOnlyCore);
+调用systemReady()方法，表示系统准备启动;
+try {
+            wm.systemReady();
+        } catch (Throwable e) {
+            reportWtf("making Window Manager Service ready", e);
+        }
+调用WindowManagerPolicy.java的systemReady()方法
+public void systemReady() {
+        mPolicy.systemReady();
+    }
+而这个mPolicy 是由PhoneWindowManager.java的构造方法构造出来的;
+final WindowManagerPolicy mPolicy = new PhoneWindowManager();
+也就是说最终会调用到PhoneWindowManager.java的systemReady()方法，在这个方法内初始化KeyguardServiceDelegate对象并调用systemReady()方法;
+ mKeyguardDelegate = new KeyguardServiceDelegate(mContext);
+ mKeyguardDelegate.onSystemReady();
+在KeyguardServiceDelegate.java类内，继续调用KeyguardServiceWrapper.java的systemReady()方法;
+public void onSystemReady() {
+        if (mKeyguardService != null) {
+            mKeyguardService.onSystemReady();
+        } else {
+            mKeyguardState.systemIsReady = true;
+        }
+    }
+在KeyguardServiceWrapper.java内使用aidl调用KeyguardService.java的onSystemReady()方法;
+    @Override // Binder interface
+    public void onSystemReady() {
+        try {
+            mService.onSystemReady();
+        } catch (RemoteException e) {
+            Slog.w(TAG , "Remote Exception", e);
+        }
+    }
+在KeyguardService.java内调用KeyguardViewMediator.java的onSystemReady()方法;
+        @Override // Binder interface
+        public void onSystemReady() {
+            checkPermission();
+            mKeyguardViewMediator.onSystemReady();
+        }
+最终在KeyguardViewMediator.java的onSystemReady()方法内调用doKeyguardLocked()开始锁屏加载流程;
+
+    /**
+     * Let us know that the system is ready after startup.
+     */
+    public void onSystemReady() {
+        mSearchManager = (SearchManager) mContext.getSystemService(Context.SEARCH_SERVICE);
+        synchronized (this) {
+            if (DEBUG) Log.d(TAG, "onSystemReady");
+            mSystemReady = true;
+            doKeyguardLocked(null);
+            mUpdateMonitor.registerCallback(mUpdateCallback);
+        }
+        // Most services aren't available until the system reaches the ready state, so we
+        // send it here when the device first boots.
+        maybeSendUserPresentBroadcast();
+    }
+KeyguardViewMediator.java的doKeyguardLocked()方法;
+    /**
+     * Enable the keyguard if the settings are appropriate.
+     */
+    private void doKeyguardLocked(Bundle options) {
+        // if another app is disabling us, don't show
+        if (!mExternallyEnabled) {
+            return;
+        }
+
+        // if the keyguard is already showing, don't bother
+        if (mStatusBarKeyguardViewManager.isShowing()) {
+            resetStateLocked();
+            return;
+        }
+
+        // if the setup wizard hasn't run yet, don't show
+        final boolean requireSim = !SystemProperties.getBoolean("keyguard.no_require_sim", false);
+        final boolean absent = SubscriptionManager.isValidSubscriptionId(
+                mUpdateMonitor.getNextSubIdForState(IccCardConstants.State.ABSENT));
+        final boolean disabled = SubscriptionManager.isValidSubscriptionId(
+                mUpdateMonitor.getNextSubIdForState(IccCardConstants.State.PERM_DISABLED));
+        final boolean lockedOrMissing = mUpdateMonitor.isSimPinSecure()
+                || ((absent || disabled) && requireSim);
+
+        if (!lockedOrMissing && shouldWaitForProvisioning()) {
+            return;
+        }
+
+        if (mLockPatternUtils.isLockScreenDisabled(KeyguardUpdateMonitor.getCurrentUser())
+                && !lockedOrMissing) {
+            return;
+        }
+
+        if (mLockPatternUtils.checkVoldPassword(KeyguardUpdateMonitor.getCurrentUser())) {
+            // Without this, settings is not enabled until the lock screen first appears
+            setShowingLocked(false);
+            hideLocked();
+            mUpdateMonitor.reportSuccessfulStrongAuthUnlockAttempt();
+            return;
+        }
+        showLocked(options);
+    }
+1、mExternallyEnabled;默认为true，如果其它应用设置keyguard不显示，则直接return不显示;
+2、如果keyguard当前正在显示，则不用管它，重置;
+3、如果安装向导未执行完毕，即设备未完成初始化绑定等操作，也不去显示keyguard;
+4、如果当前屏幕为灭屏状态，也不去显示keyguard;
+5、Without this, settings is not enabled until the lock screen first appears(我这边没有比较好的说法);
+6、如果上述条件都不满足则使用showLocked()方法开始显示keyguard。
+
+发送msg为SHOW的消息，开始显示keyguard;
+
+    /**
+     * Send message to keyguard telling it to show itself
+     * @see #handleShow
+     */
+    private void showLocked(Bundle options) {
+        if (DEBUG) Log.d(TAG, "showLocked");
+        // ensure we stay awake until we are finished displaying the keyguard
+        mShowKeyguardWakeLock.acquire();
+        Message msg = mHandler.obtainMessage(SHOW, options);
+        mHandler.sendMessage(msg);
+    }
+调用handleShow()方法;
+case SHOW:
+    handleShow((Bundle) msg.obj);
+    break;
+在handleShow()方法中调用StatusBarKeyguardViewManager.java的show()方法;
+    /**
+     * Handle message sent by {@link #showLocked}.
+     * @see #SHOW
+     */
+    private void handleShow(Bundle options) {
+        synchronized (KeyguardViewMediator.this) {
+            if (!mSystemReady) {
+                if (DEBUG) Log.d(TAG, "ignoring handleShow because system is not ready.");
+                return;
+            } else {
+                if (DEBUG) Log.d(TAG, "handleShow");
+            }
+
+            setShowingLocked(true);
+            mStatusBarKeyguardViewManager.show(options);
+            mHiding = false;
+            mWakeAndUnlocking = false;
+            resetKeyguardDonePendingLocked();
+            mHideAnimationRun = false;
+            updateActivityLockScreenState();
+            adjustStatusBarLocked();
+            userActivity();
+
+            mShowKeyguardWakeLock.release();
+        }
+        mKeyguardDisplayManager.show();
+    }
+调入到StatusBarKeyguardViewManager.java的show()方法
+    public void show(Bundle options) {
+        mShowing = true;
+        mStatusBarWindowManager.setKeyguardShowing(true);
+        mScrimController.abortKeyguardFadingOut();
+        reset();
+    }
+StatusBarKeyguardViewManager.java负责keyguard在status bar中创建、显示、隐藏、重置
+StatusBarWindowManager.java负责所有的status bar窗口状态的逻辑管理
+1、StatusBarKeyguardViewManager.java的setKeyguardShowing()方法去使用apply()方法刷新mStatusBarView的flag参数;
+    public void setKeyguardShowing(boolean showing) {
+        mCurrentState.keyguardShowing = showing;
+        apply(mCurrentState);
+    }
+2、调用reset()方法去重置mStatusBarView的state，先来看reset()方法;
+    /**
+     * Reset the state of the view.
+     */
+    public void reset() {
+        if (mShowing) {
+            if (mOccluded) {
+                mPhoneStatusBar.hideKeyguard();
+                mPhoneStatusBar.stopWaitingForKeyguardExit();
+                mBouncer.hide(false /* destroyView */);
+            } else {
+                showBouncerOrKeyguard();
+            }
+            KeyguardUpdateMonitor.getInstance(mContext).sendKeyguardReset();
+            updateStates();
+        }
+    }
+在reset()方法中会去判断keyguard是否被其它的窗口中断mOccluded，是则不显示keyguard;否则的就执行showBouncerOrKeyguard()方法;
+showBouncerOrKeyguard()方法使用KeyguardBouncer.java的needsFullscreenBouncer()方法判断显示常规锁屏还是Bouncer安全锁屏（比如图案锁屏、密码锁屏、PIN码锁屏等）;
+    /**
+     * Shows the notification keyguard or the bouncer depending on
+     * {@link KeyguardBouncer#needsFullscreenBouncer()}.
+     */
+    private void showBouncerOrKeyguard() {
+        if (mBouncer.needsFullscreenBouncer()) {
+
+            // The keyguard might be showing (already). So we need to hide it.
+            mPhoneStatusBar.hideKeyguard();
+            mBouncer.show(true /* resetSecuritySelection */);
+        } else {
+            mPhoneStatusBar.showKeyguard();
+            mBouncer.hide(false /* destroyView */);
+            mBouncer.prepare();
+        }
+    }
+1、常规锁屏即为滑动锁屏界面，一般滑动即可解锁，称之为notification keyguard;这个类型的keyguard已经和statusbar融为一体了，可以通过PhoneStatusBar.java的对象直接进行控制;
+2、Bouncer安全锁屏;比如密码、图案、PIM码、PUK码等锁屏方式的锁屏界面，通过KeyguardBouncer.java来开始控制show()和hide();
+KeyguardBouncer.java的show()方法：
+    public void show(boolean resetSecuritySelection) {
+        ensureView();
+        if (resetSecuritySelection) {
+            // showPrimarySecurityScreen() updates the current security method. This is needed in
+            // case we are already showing and the current security method changed.
+            mKeyguardView.showPrimarySecurityScreen();
+        }
+        if (mRoot.getVisibility() == View.VISIBLE || mShowingSoon) {
+            return;
+        }
+
+        // Try to dismiss the Keyguard. If no security pattern is set, this will dismiss the whole
+        // Keyguard. If we need to authenticate, show the bouncer.
+        if (!mKeyguardView.dismiss()) {
+            mShowingSoon = true;
+
+            // Split up the work over multiple frames.
+            DejankUtils.postAfterTraversal(mShowRunnable);
+        }
+    }
+1、首先调用ensureView()方法去加载keyguard_bouncer view
+    private void ensureView() {
+        if (mRoot == null) {
+            inflateView();
+        }
+    }
+
+    private void inflateView() {
+        removeView();
+        mRoot = (ViewGroup) LayoutInflater.from(mContext).inflate(R.layout.keyguard_bouncer, null);
+        mKeyguardView = (KeyguardHostView) mRoot.findViewById(R.id.keyguard_host_view);
+        mKeyguardView.setLockPatternUtils(mLockPatternUtils);
+        mKeyguardView.setViewMediatorCallback(mCallback);
+        mContainer.addView(mRoot, mContainer.getChildCount());
+        mRoot.setVisibility(View.INVISIBLE);
+        mRoot.setSystemUiVisibility(View.STATUS_BAR_DISABLE_HOME);
+    }
+2、调用KeyguardHostView.java的showPrimarySecurityScreen()方法;
+    /**
+     * Called when the view needs to be shown.
+     */
+    public void showPrimarySecurityScreen() {
+        if (DEBUG) Log.d(TAG, "show()");
+        mSecurityContainer.showPrimarySecurityScreen(false);
+    }
+继续调用KeyguardSecurityContainer.java的showPrimarySecurityScreen()方法，先去获取锁屏方式;
+    /**
+     * Shows the primary security screen for the user. This will be either the multi-selector
+     * or the user's security method.
+     * @param turningOff true if the device is being turned off
+     */
+    void showPrimarySecurityScreen(boolean turningOff) {
+        SecurityMode securityMode = mSecurityModel.getSecurityMode();
+        if (DEBUG) Log.v(TAG, "showPrimarySecurityScreen(turningOff=" + turningOff + ")");
+        showSecurityScreen(securityMode);
+    }
+继续往下将获取到的锁屏方式securityMode作为参数调用showSecurityScreen()方法;这个方法主要是用来根据securityMode显示锁屏view的。
+    /**
+     * Switches to the given security view unless it's already being shown, in which case
+     * this is a no-op.
+     *
+     * @param securityMode
+     */
+    private void showSecurityScreen(SecurityMode securityMode) {
+        if (DEBUG) Log.d(TAG, "showSecurityScreen(" + securityMode + ")");
+
+        if (securityMode == mCurrentSecuritySelection) return;
+
+        KeyguardSecurityView oldView = getSecurityView(mCurrentSecuritySelection);
+        KeyguardSecurityView newView = getSecurityView(securityMode);
+
+        // Emulate Activity life cycle
+        if (oldView != null) {
+            oldView.onPause();
+            oldView.setKeyguardCallback(mNullCallback); // ignore requests from old view
+        }
+        if (securityMode != SecurityMode.None) {
+            newView.onResume(KeyguardSecurityView.VIEW_REVEALED);
+            newView.setKeyguardCallback(mCallback);
+        }
+
+        // Find and show this child.
+        final int childCount = mSecurityViewFlipper.getChildCount();
+
+        final int securityViewIdForMode = getSecurityViewIdForMode(securityMode);
+        for (int i = 0; i < childCount; i++) {
+            if (mSecurityViewFlipper.getChildAt(i).getId() == securityViewIdForMode) {
+                mSecurityViewFlipper.setDisplayedChild(i);
+                break;
+            }
+        }
+
+        mCurrentSecuritySelection = securityMode;
+        mSecurityCallback.onSecurityModeChanged(securityMode,
+                securityMode != SecurityMode.None && newView.needsInput());
+    }
+1、首先判断传入进来的securityMode是否已经被显示;
+2、调用getSecurityView()方法获取给定的锁屏view;
+3、调用KeyguardSecurityView.java的onPause()方法暂停显示旧锁屏view，onResume()方法开始显示新的锁屏view;KeyguardSecurityView.java是一个接口类，其内部方法都是抽象的只有声明没有实现，其方法实现都是在继承于这个接口的类中。
+而在keyguard中主要是KeyguardAbsKeyInputView.java、KeyguardPasswordView.java、KeyguardPatternView.java等等这些类继承于此接口实现其内部方法，这些类就是具体的锁屏界面view显示;
+
+开机显示keyguard的总结：
+1、在KeyguardViewMediator.java的onSystemReady()方法内调用doKeyguardLocked()开始锁屏加载流程;
+2、setKeyguardEnabled();其他应用程序或者服务可以调用setKeyguardEnabled()方法请求禁止锁屏;
+3、KeyguardViewMediator.java在keyguard中起着主要调度的作用，主要负责
+1）查询锁屏状态，当前是锁屏还是解锁状态;在锁屏状态下，会限制输入事件。
+2）PhoneWindowManager.java通过mKeyguardDelegate对象(KeyguardServiceDelegate.java)来使能KeyguardViewMediator.java，调用其中的方法;
+3）响应SIM卡状态变化并对锁屏界面做相应的调整onSimStateChanged();
+4、判断keyguard是否被禁止、keyguard当前是否正在显示等等即当前是否可以显示keguard，可以显示的话继续调用showLocked()方法;
+5、调用handleShow()方法，调用StatusBarKeyguardViewManager.java的show()开始显示keyguard锁屏界面;
+6、调用reset()方法，调用showBouncerOrKeyguard()方法判断是显示正常锁屏界面还是安全锁屏界面;显示正常锁屏的话直接调用PhoneStatusBar.java的showKeyguard()或者hideKeyguard()方法;如果显示安全锁屏界面的话则调入KeyguardBouncer.java类内;
+7、调用KeyguardBouncer.java的show()方法;使用ensureView()方法去加载实例化布局;调用KeyguardHostView.java的showPrimarySecurityScreen()方法去显示安全锁屏界面;
+8、KeyguardHostView.java的showPrimarySecurityScreen()方法会调入到KeyguardSecurityContainer.java的showPrimarySecurityScreen()方法中来;
+9、调用showSecurityScreen()方法，根据锁屏方式来加载不同的锁屏view;
+10、KeyguardSecurityView.java是一个接口类，其内部方法都是抽象的只有声明没有实现，其方法实现都是在继承于这个接口的类中。
+而在keyguard中主要是KeyguardAbsKeyInputView.java、KeyguardPasswordView.java、KeyguardPatternView.java等等Keyguard*View.java这些类继承于此接口实现其内部方法，这些类就是具体的锁屏界面view显示;
+
+
+系统灭屏Screen off之后的keguard加载流程：
+android系统中的自动灭屏跟Power按键之后灭屏流程可能有点区别，但是由于主要是分析灭屏之后keyguard加载，所以只需要关心keguard在系统灭屏之后的加载流程。
+这里以按power键灭屏为例，分析其流程：
+当亮屏状态下Power键按下之后，经过一系列的判断之后会调用mPowerManager.goToSleep()方法，即通过aidl调用到PowerManagerService.java的gotoSleep()方法：
+        @Override // Binder call
+        public void goToSleep(long eventTime, int reason, int flags) {
+            if (eventTime > SystemClock.uptimeMillis()) {
+                throw new IllegalArgumentException("event time must not be in the future");
+            }
+
+            mContext.enforceCallingOrSelfPermission(
+                    android.Manifest.permission.DEVICE_POWER, null);
+
+            final int uid = Binder.getCallingUid();
+            final long ident = Binder.clearCallingIdentity();
+            try {
+                goToSleepInternal(eventTime, reason, flags, uid);
+            } finally {
+                Binder.restoreCallingIdentity(ident);
+            }
+        }
+继续调用goToSleepInternal()方法：
+    private void goToSleepInternal(long eventTime, int reason, int flags, int uid) {
+        synchronized (mLock) {
+            if (goToSleepNoUpdateLocked(eventTime, reason, flags, uid)) {
+                updatePowerStateLocked();
+            }
+        }
+    }
+调用updatePowerStateLocked()方法，在这个方法内又去调用finishWakefulnessChangeIfNeededLocked()方法
+    private void finishWakefulnessChangeIfNeededLocked() {
+        if (mWakefulnessChanging && mDisplayReady) {
+            if (mWakefulness == WAKEFULNESS_DOZING
+                    && (mWakeLockSummary & WAKE_LOCK_DOZE) == 0) {
+                return; // wait until dream has enabled dozing
+            }
+            mWakefulnessChanging = false;
+            mNotifier.onWakefulnessChangeFinished();
+        }
+    }
+此时调用Notifier.java的onWakefulnessChangeFinished()方法：
+    /**
+     * Notifies that the device has finished changing wakefulness.
+     */
+    public void onWakefulnessChangeFinished() {
+        if (DEBUG) {
+            Slog.d(TAG, "onWakefulnessChangeFinished");
+        }
+
+        if (mInteractiveChanging) {
+            mInteractiveChanging = false;
+            handleLateInteractiveChange();
+        }
+    }
+调用handleLateInteractiveChange()方法;
+    /**
+     * Handle late interactive state changes once they are finished so that the system can
+     * finish pending transitions (such as turning the screen off) before causing
+     * applications to change state visibly.
+     */
+    private void handleLateInteractiveChange() {
+        synchronized (mLock) {
+            if (mInteractive) {
+                // Finished waking up...
+                mHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        mPolicy.finishedWakingUp();
+                    }
+                });
+            } else {
+                // Finished going to sleep...
+                // This is a good time to make transitions that we don't want the user to see,
+                // such as bringing the key guard to focus.  There's no guarantee for this
+                // however because the user could turn the device on again at any time.
+                // Some things may need to be protected by other mechanisms that defer screen on.
+
+                // Cancel pending user activity.
+                if (mUserActivityPending) {
+                    mUserActivityPending = false;
+                    mHandler.removeMessages(MSG_USER_ACTIVITY);
+                }
+
+                // Tell the policy we finished going to sleep.
+                final int why = translateOffReason(mInteractiveChangeReason);
+                mHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        EventLog.writeEvent(EventLogTags.POWER_SCREEN_STATE, 0, why, 0, 0);
+                        mPolicy.finishedGoingToSleep(why);
+                    }
+                });
+
+                // Send non-interactive broadcast.
+                mPendingInteractiveState = INTERACTIVE_STATE_ASLEEP;
+                mPendingGoToSleepBroadcast = true;
+                updatePendingBroadcastLocked();
+            }
+        }
+    }
+这个方法里面需要关注的有两句话：mPolicy.finishedWakingUp()和mPolicy.finishedGoingToSleep();看其中的注释发现一个是唤醒另外一个是睡眠操作，由于当前是power灭屏，所以需要看得是mPolicy.finishedGoingToSleep()方法。而mPolicy是WindowManagerPolicy.java的对象，这个类又是一个接口类，接口实现是在PhoneWindowManager.java类中，故此时调入到PhoneWindowManager.java的finishedGoingToSleep()方法;
+    // Called on the PowerManager's Notifier thread.
+    @Override
+    public void finishedGoingToSleep(int why) {
+        EventLog.writeEvent(70000, 0);
+        if (DEBUG_WAKEUP) Slog.i(TAG, "Finished going to sleep... (why=" + why + ")");
+        MetricsLogger.histogram(mContext, "screen_timeout", mLockScreenTimeout / 1000);
+
+        // We must get this work done here because the power manager will drop
+        // the wake lock and let the system suspend once this function returns.
+        synchronized (mLock) {
+            mAwake = false;
+            updateWakeGestureListenerLp();
+            updateOrientationListenerLp();
+            updateLockScreenTimeout();
+        }
+        if (mKeyguardDelegate != null) {
+            mKeyguardDelegate.onFinishedGoingToSleep(why);
+        }
+    }
+分析这个方法看到这么一句话：
+mKeyguardDelegate.onFinishedGoingToSleep(why);
+也就是说会调用KeyguardServiceDelegate.java的onFinishedGoingToSleep()方法;而在上面的分析过程中知道，PhoneWindowManager.java通过mKeyguardDelegate对象(KeyguardServiceDelegate.java)来使能KeyguardViewMediator.java，调用其中的方法;也就是说通过这句话此时逻辑已经调入到了KeyguardViewMediator.java类的onFinishedGoingToSleep()方法。
+    public void onFinishedGoingToSleep(int why) {
+        if (DEBUG) Log.d(TAG, "onFinishedGoingToSleep(" + why + ")");
+        synchronized (this) {
+            mDeviceInteractive = false;
+            mGoingToSleep = false;
+
+            resetKeyguardDonePendingLocked();
+            mHideAnimationRun = false;
+
+            notifyFinishedGoingToSleep();
+
+            if (mPendingReset) {
+                resetStateLocked();
+                mPendingReset = false;
+            }
+            if (mPendingLock) {
+                doKeyguardLocked(null);
+                mPendingLock = false;
+            }
+        }
+        KeyguardUpdateMonitor.getInstance(mContext).dispatchFinishedGoingToSleep(why);
+    }
+在这个方法中调用notifyFinishedGoingToSleep()方法，向mHandler中发送一个msg为NOTIFY_FINISHED_GOING_TO_SLEEP的消息;
+    private void notifyFinishedGoingToSleep() {
+        if (DEBUG) Log.d(TAG, "notifyFinishedGoingToSleep");
+        mHandler.sendEmptyMessage(NOTIFY_FINISHED_GOING_TO_SLEEP);
+    }
+mHandler收到这个消息后，去调用handleNotifyFinishedGoingToSleep()方法;
+case NOTIFY_FINISHED_GOING_TO_SLEEP:
+    handleNotifyFinishedGoingToSleep();
+    break;
+在这个方法中去调用StatusBarKeyguardViewManager.java的onFinishedGoingToSleep()方法;
+    private void handleNotifyFinishedGoingToSleep() {
+        synchronized (KeyguardViewMediator.this) {
+            if (DEBUG) Log.d(TAG, "handleNotifyFinishedGoingToSleep");
+            mStatusBarKeyguardViewManager.onFinishedGoingToSleep();
+        }
+    }
+再来看StatusBarKeyguardViewManager.java的onFinishedGoingToSleep()方法：
+    public void onFinishedGoingToSleep() {
+        mDeviceInteractive = false;
+        mPhoneStatusBar.onFinishedGoingToSleep();
+        mBouncer.onScreenTurnedOff();
+    }
+1、调用PhoneStatusBar.java的onFinishedGoingToSleep()，去通知PhoneStatusBar更新当前的状态;
+2、进入KeyguardBouncer.java的onScreenTurnedOff()方法真正开始keyguard的加载;
+
+接下来来看KeyguardBouncer.java的onScreenTurnedOff()方法：
+
+    public void onScreenTurnedOff() {
+        if (mKeyguardView != null && mRoot != null && mRoot.getVisibility() == View.VISIBLE) {
+            mKeyguardView.onPause();
+        }
+    }
+调用KeyguardHostView.java的onPause()方法：
+    /**
+     * Called when the Keyguard is not actively shown anymore on the screen.
+     */
+    public void onPause() {
+        if (DEBUG) Log.d(TAG, String.format("screen off, instance %s at %s",
+                Integer.toHexString(hashCode()), SystemClock.uptimeMillis()));
+        mSecurityContainer.showPrimarySecurityScreen(true);
+        mSecurityContainer.onPause();
+        clearFocus();
+    }
+继续调用KeyguardSecurityContainer.java的showPrimarySecurityScreen()方法，根据上面的分析知道，此处先会去获取当前锁屏方式，然后根据得到的锁屏方式去加载锁屏界面;
+至此完成keyguard在screen off状态下的加载流程分析;
+
+正常灭屏显示keyguard流程总结：
+1、不管是按Power键还是自动灭屏，都会执行到PowerManagerService.java的gotoSleep()方法;
+2、在这个方法内通过一系列的调用，调入到PhoneWindowManager.java的finishedGoingToSleep()方法;
+3、在PhoneWindowManager.java类中通过KeyguardServiceDelegate.java类的对象mKeyguardDelegate来使能KeyguardViewMediator.java;
+4、而KeyguardViewMediator.java作为keyguard的调度者，从这里开始keyguard的加载;
+5、最终在KeyguardSecurityContainer.java的showPrimarySecurityScreen()方法内去实现根据锁屏方式加载锁屏界面;
+
+
+
+

@@ -1,0 +1,16 @@
+做任何事情都是有套路有步骤的。按照这个流程或者规范做。那些个入门的字符设备驱动也是一样。那具体步骤如下
+
+1. 写出初始化，退出函数
+static int __init func()
+static void __exit func()
+
+2 申请设备号。
+alloc_chrdev_region
+
+3 初始化cdev结构体，并且初始化, 这需要把file_operation 设备号传进去。
+
+4 实现file_operation的函数。
+
+5 根据设备号创建设备节点/dev/xxx
+
+6 cat验证。

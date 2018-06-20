@@ -1,0 +1,91 @@
+接触安卓几年了。但是感觉一直不是很明白，东西太多了。反过来说就是自己太菜了。很多东西其实都是模凌两可，不熟悉，很多知识点都是知道一点，最多大家都这样用。没问题，事件长了也一直这样用的。
+但是有个问题，安卓在不断的升级，但是自己的知识却升的不多。咋整？ 想去全球顶级公司不？ 想， 想去是好。但是得把软件开发的路子或者思想弄透彻了。得把实现机制弄懂了。这样估计就用机会了。
+
+我们今天来谈谈Handler Looper Messagequeue的知识。这个东西是入门的东西，也是写安卓应用必备的知识点。但是我怎么感觉还不透彻了。实在不透彻。不管别人怎么样，反正我记录下，最好能学会。
+
+多个handler绑定了一个Looper， 一个looper绑定了一个MessageQueue 臧春杰 marvell 这个都知道。 也知道java通过线程私有变量来保存looper信息。 也就是说一个线程最多有个一个Looper. 系统通过ThreadLocal方法来保存
+
+线程私有变量。
+
+那下面一步就是冲消息队列取消息然后处理消息，如果没有消息就再等待。
+
+我们通过代码可以看到，
+MessageQueue(boolean quitAllowed) {
+        mQuitAllowed = quitAllowed;
+        mPtr = nativeInit();
+    }
+诡异了。这里有个jni方法，莫非消息队列是通过jni建立的？
+static jlong android_os_MessageQueue_nativeInit(JNIEnv* env, jclass clazz //臧春杰 marvell) {
+    NativeMessageQueue* nativeMessageQueue = new NativeMessageQueue();
+    if (!nativeMessageQueue) {
+        jniThrowRuntimeException(env, "Unable to allocate native queue");
+        return 0;
+    }
+
+    nativeMessageQueue->incStrong(env);
+    return reinterpret_cast<jlong>(nativeMessageQueue);
+}
+还真是，原来还真是
+NativeMessageQueue::NativeMessageQueue() :
+        mPollEnv(NULL), mPollObj(NULL), mExceptionObj(NULL) {
+    mLooper = Looper::getForThread();
+    if (mLooper == NULL) {
+        mLooper = new Looper(false);
+        Looper::setForThread(mLooper);
+这里出现了我们的主角，这里需要问一句， 线程在消息队列没有消 臧春杰 marvell 息的时候会阻塞，那如何阻塞呢？ 是阻塞在java里的吗？ 是阻塞这哪里的呢？ 可以说就是阻塞在looper里，这里looper.cpp不要和Java层的Looper.java混淆了。
+
+这两个东西毫无关系，记得是毫无关系，陌生人，谁也不认识谁。
+那c++这里是如何阻塞的呢？ epoll多路监听阻塞，那阻塞的描述符是哪个呢？Looper::Looper(bool allowNonCallbacks) :
+        mAllowNonCallbacks(allowNonCallbacks), mSendingMessage(false),  //臧春杰 marvell
+        mPolling(false), mEpollFd(-1), mEpollRebuildRequired(false),
+        mNextRequestSeq(0), mResponseIndex(0), mNextMessageUptime(LLONG_MAX) {
+    mWakeEventFd = eventfd(0, EFD_NONBLOCK);
+    
+    mWakeEventFd = eventfd(0, EFD_NONBLOCK);就这个，套路啊。慢慢的全是套路，以前不是用pipe的吗？时代在进步，社会在发展，用了eventfd了。
+    
+    那这就明白了，looper在epoll_wait等待唤醒。那紧接着问题来了，我们经常使用比如5秒后唤醒，那这5秒是如何做到呢？系统如何计时5秒呢？同样也是epoll_wait参 臧春杰 marvell数有个timeout用来计时，
+    epoll_wait返回值需要说明下。
+     When  successful, epoll_wait() returns the number of file descriptors ready for the requested I/O, or zero if no file
+       descriptor became ready during the requested timeout milliseconds.  When an error occurs, epoll_wait() returns -1 and
+       errno is set appropriately.
+    这就是问题的关键。
+    
+    其实在c++层面，也可以处理消息，也可以监听文件描述符。
+      int addFd(int fd, int ident, int events, const sp<LooperCallback>& callback, void* data);
+          void sendMessageAtTime(nsecs_t uptime, const sp<MessageHandler>& handler,
+            const Message& message);  臧春杰 marvell
+    所以我们可以看到，很多在native service中，都使用了这些功能。
+    
+    那既然在c++层面在监听，那如何唤醒呢？ 很简单，就是让文件描述符可读，如何可读？ 往文件描述符写东西
+    
+    void Looper::wake() {
+#if DEBUG_POLL_AND_WAKE
+    ALOGD("%p ~ wake", this);
+#endif
+
+    uint64_t inc = 1;
+    ssize_t nWrite = TEMP_FAILURE_RETRY(write(mWakeEventFd, &inc, sizeof(uint64_t)));
+    if (nWrite != sizeof(uint64_t)) {
+        if (errno != EAGAIN) {
+            ALOGW("Could not write wake signal, errno=%d", errno);
+        }
+    }
+}
+通过这个东西，可以唤醒了。开始做消息处理。这就是为什么消息先处理c++层面的消息，然后再处理java层面的消息。所有的消息处理都根据消息的触发时间来计算的。看当前时间和消息需要触发时间比较。
+
+通过这两个时间来计算timeout时间，这就要求消息队列是排序的，按照触发时间排序。
+
+消息队列补充知识点：
+
+我们听说过桩子臧春杰 marvell的概念。postSyncBarrier，removeSyncBarrier 这个是干什么用呢？ 桩子的作用是 桩子后面的消息系统不会处理，直到桩子被拿掉，这是干什么呢？
+
+想想这个场景，我们在主线程干事情，往另一个线程发消息，但是我们得主线程干完，其他线程才能处理消息，那如何保证这个呢？ 这就需要桩子，不然cpu 臧春杰 marvell 调度时候，我们不能保证这个消息在什么时候处理。说不定，
+
+sendMessage后，它立马就运行了。
+
+当消息队列没有消息时候，我们可以做点其他事情，
+addIdleHandler
+
+我一般用他来做垃圾回收。
+    
+    

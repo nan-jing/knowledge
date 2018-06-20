@@ -1,0 +1,44 @@
+TARGET_PRODUCT 来决定编译定制product.
+首先， 编译Android 代码 通常情况下使用：
+# make showcommands
+这实际上等价于下面的完整命令 （具体参见 build/core/envsetup.mk ）
+# TARGET_ARCH=arm TARGET_PRODUCT=generic TARGET_BUILD_TYPE=release make showcommands
+可见，默认情况下编译系统认为TARGET_PRODUCT 是generic 的
+那如何编译特定产品的Android呢？
+这就需要查看Android Makefile是如何解析环境变量TARGET_PRODUCT的。
+Android Makefile 的引用关系是这样的
+Makefile  -> build/core/main.mk -> build/core/config.mk -> build/core/envsetup.mk -> build/core/product_config.mk
+在build/core/product_config.mk 中编译系统首先调用 build/core/product.mk中定义的函数get-all-product-makefiles ，来
+遍历整个vendor 的子目录， 找到vendor下所有的 AndroidProducts.mk, 不同子目录下的AndroidProducts.mk 中定义了不同的 PRODUCT_NAME, PRODUCT_DEVICE 等信息，（
+我们也可以通过 打开build/core/product_config.mk  中的#$(dump-products) 语句使控制台编译的时候输出所有product 的信息）  ， 
+接着build/core/product_config.mk 会调用resolve-short-product-name 将TARGET_PRODUCT匹配的AndroidProducts.mk 中定义的 PRODUCT_DEVICE 赋值给TARGET_DEVICE。
+有了这个TARGET_DEVICE, 再回到 build/core/config.mk，
+会include $(TARGET_DEVCIE)/BoardConfig.mk
+board_config_mk := /
+ $(strip $(wildcard /
+  $(SRC_TARGET_DIR)/board/$(TARGET_DEVICE)/BoardConfig.mk /
+  vendor/*/$(TARGET_DEVICE)/BoardConfig.mk /
+ ))
+ include $(board_config_mk)
+而这个配置文件BoardConfig.mk 决定了目标系统编译属性，比如使用ALSA还是不是 GENERIC_AUDIO 等等
+另外在这里TARGET_DEVICE 宏也决定了TARGET_DEVICE_DIR， 因为TARGET_DEVICE_DIR 取的是上面提到的BoardConfig.mk 的路径。
+TARGET_DEVICE_DIR := $(patsubst %/,%,$(dir $(board_config_mk)))
+当然Android 的Ob目标输出也是由TARGET_DEVICE决定，见build/core/envsetup.mk
+TARGET_OUT_ROOT_release := $(OUT_DIR)/target
+TARGET_OUT_ROOT_debug := $(DEBUG_OUT_DIR)/target
+TARGET_OUT_ROOT := $(TARGET_OUT_ROOT_$(TARGET_BUILD_TYPE))
+TARGET_PRODUCT_OUT_ROOT := $(TARGET_OUT_ROOT)/product
+PRODUCT_OUT := $(TARGET_PRODUCT_OUT_ROOT)/$(TARGET_DEVICE)
+再回到 build/core/main.mk, 编译系统接着做的一个件事情是，遍历所有字目录，找到所有Android.mk文件，并将这些Android.mk文件include 进来
+#
+# Typical build; include any Android.mk files we can find.
+#
+subdir_makefiles := /
+ $(shell build/tools/findleaves.py --prune=out --prune=.repo --prune=.git $(subdirs) Android.mk)
+include $(subdir_makefiles)
+我们再来看其中的
+./build/target/board/Android.mk
+，对了它引用了
+include $(TARGET_DEVICE_DIR)/AndroidBoard.mk
+由上面TARGET_DEVICE_DIR的定义，这下又进入了
+vendor 下TARGET_DEVICE指向的目录了，这个mk文件中定义了特定Product需要编译和安装app 和 script.

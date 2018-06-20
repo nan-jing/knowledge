@@ -1,0 +1,276 @@
+上文说道开始解释init.rc 不好整。来吧，看看static void parse_config(const char *fn, const std::string& data)
+解释的步骤，就是一行一行的读，可以看到读T_NEWLINE: 读了一行，查找改行的关键字，关键字？ 什么是关键字？ init.rc肯定不能瞎写。如果写个cjzang. 系统肯定不认识。在keywords.h中定义了认识的所有关键字
+  KEYWORD(mount,       COMMAND, 3, do_mount)
+    KEYWORD(oneshot,     OPTION,  0, 0)
+    KEYWORD(onrestart,   OPTION,  0, 0)
+    KEYWORD(on,          SECTION, 0, 0)
+    KEYWORD(powerctl,    COMMAND, 1, do_powerctl)
+   患有很多，不一一列出了。
+   
+   这些关键字信息会组织在一个结构体数组了
+   #include "keywords.h"
+
+#define KEYWORD(symbol, flags, nargs, func) \
+    [ K_##symbol ] = { #symbol, func, nargs + 1, flags, },
+
+static struct {
+    const char *name;
+    int (*func)(int nargs, char **args);
+    unsigned char nargs;
+    unsigned char flags;
+} keyword_info[KEYWORD_COUNT] = {
+    [ K_UNKNOWN ] = { "unknown", 0, 0, 0 },
+#include "keywords.h"
+};
+
+注意这里，为什么要包含两次 include "keywords.h"呢？ 这个要仔细看了，读者可以自己探索下，一次是定义了枚举变量，第二次是结构体定义。继续往下
+ int kw = lookup_keyword(args[0]);
+                if (kw_is(kw, SECTION)) {
+                    state.parse_line(&state, 0, 0);
+                    parse_new_section(&state, kw, nargs, args);
+                } else {
+                    state.parse_line(&state, nargs, args);
+                }
+对读的没一行查找关键字，这么查，就是从结构体数组里查呗。 查到了关键字在看看关键字的类型#define kw_is(kw, type) (keyword_info[kw].flags & (type)) 也就是看结构体flag属性。
+
+关键字先看段关键字，以on service import开头的是段关键字，代表一下的内容是一段。一段肯定放到一个结构体里。直到遇到下一个关键字代表段结束。既然遇到的是段关键字，首先看看是哪个段关键字
+
+static void parse_new_section(struct parse_state *state, int kw,
+                       int nargs, char **args)
+{
+    printf("[ %s %s ]\n", args[0],
+           nargs > 1 ? args[1] : "");
+    switch(kw) {
+    case K_service:
+        state->context = parse_service(state, nargs, args);
+        if (state->context) {
+            state->parse_line = parse_line_service;
+            return;
+        }
+        break;
+    case K_on:
+        state->context = parse_action(state, nargs, args);
+        if (state->context) {
+            state->parse_line = parse_line_action;
+            return;
+        }
+        break;
+    case K_import:
+        parse_import(state, nargs, args);
+        break;
+    }
+    state->parse_line = parse_line_no_op;
+    如果是以on开头的，以service开头的。 我们可以看到做了不同的处理。同时把一个函数指针放到了一个结构体里了。
+    
+    以on开头的都放到了Action结构体里。
+    struct action {
+        /* node in list of all actions */
+    struct listnode alist;
+        /* node in the queue of pending actions */
+    struct listnode qlist;
+        /* node in list of actions for a trigger */
+    struct listnode tlist;
+
+    unsigned hash;
+
+        /* list of actions which triggers the commands*/
+    struct listnode triggers;
+    struct listnode commands;
+    struct command *current;
+};
+大吃一惊，listnode好熟悉，什么东西？ 想不起来额。好熟悉。奥对了。这不的驱动框架了的kset kobject的那一套机制吗？所有的action结构体会统一放到头里。这样就形成了双向闭环链表。
+那段里面的内容如何解释到action结构体里呢？
+
+我们看到了哪个结构体指针。对就他，段的内容有这个来解释。on段里面都是command类型的。如果不是那就错了。不会解释这句。最后解释的都放到了command里面了。就是说
+
+action 结构体形成了一个双向闭环链表。 每个action又把所有的command聚集起来。形成了一个双向闭环链表。
+
+哎，下面的service也是这样的。 这样需要读者自己分析查了。值得注意的是import关键字
+parser_done:
+    list_for_each(node, &import_list) {
+         struct import *import = node_to_item(node, struct import, list);
+         int ret;
+
+         ret = init_parse_config_file(import->filename);
+         if (ret)
+             ERROR("could not import file '%s' from '%s'\n",
+                   import->filename, fn);
+    }
+ 这里通过一个标签方式，形成了一个递归。来循环解释所有的import进来的配置文件。
+ 
+ 这样稀里糊涂的所有的配置文件就解释完了。 
+ 
+ 有个问题，虽然文件解释完了。但是进程如何起来呢？ init要fork进程啊。on是触发器，on里面是写command。 系统启动是有些先后顺序的。先干什么后干什么。不是瞎整的。那这个顺序如何把握呢？
+ 
+ 这需要对action结构体出发顺序排序。先出发early-init --> init---late--init
+ 
+ 下面我们在具体分析下。
+ 
+ action_for_each_trigger("early-init", action_add_queue_tail);
+
+    // Queue an action that waits for coldboot done so we know ueventd has set up all of /dev...
+    queue_builtin_action(wait_for_coldboot_done_action, "wait_for_coldboot_done");
+    // ... so that we can start queuing up actions that require stuff from /dev.
+    queue_builtin_action(mix_hwrng_into_linux_rng_action, "mix_hwrng_into_linux_rng");
+    queue_builtin_action(keychord_init_action, "keychord_init");
+    queue_builtin_action(console_init_action, "console_init");
+
+    // Trigger all the boot actions to get us started.
+    action_for_each_trigger("init", action_add_queue_tail);
+
+    // Repeat mix_hwrng_into_linux_rng in case /dev/hw_random or /dev/random
+    // wasn't ready immediately after wait_for_coldboot_done
+    queue_builtin_action(mix_hwrng_into_linux_rng_action, "mix_hwrng_into_linux_rng");
+
+    要对解释的action排序，就要把这些action加到另外的一个头里。这段代码先后顺序不允许改变，他的改变导致了action顺序的改变。
+    
+    在early-init中我们可以看到start ueventd 我们分析下， 在keywords.h可以看到start关键字的处理函数是 do_start
+    int do_start(int nargs, char **args)
+{
+    struct service *svc;
+    svc = service_find_by_name(args[1]);
+    if (svc) {
+        service_start(svc, NULL);
+    }
+    return 0;
+}
+
+这就是冲service链表中找uenvet的service，然后启动起来。void service_start(struct service *svc, const char *dynamic_args)
+前面是selinux 权限检查。
+pid_t pid = fork();
+    if (pid == 0) {
+        struct socketinfo *si;
+        struct svcenvinfo *ei;
+        char tmp[32];
+        int fd, sz;
+
+        umask(077);
+        if (properties_initialized()) {
+            get_property_workspace(&fd, &sz);
+            snprintf(tmp, sizeof(tmp), "%d,%d", dup(fd), sz);
+            add_environment("ANDROID_PROPERTY_WORKSPACE", tmp);
+        }
+
+        for (ei = svc->envvars; ei; ei = ei->next)
+            add_environment(ei->name, ei->value);
+
+        for (si = svc->sockets; si; si = si->next) {
+            int socket_type = (
+                    !strcmp(si->type, "stream") ? SOCK_STREAM :
+                        (!strcmp(si->type, "dgram") ? SOCK_DGRAM : SOCK_SEQPACKET));
+            int s = create_socket(si->name, socket_type,
+                                  si->perm, si->uid, si->gid, si->socketcon ?: scon);
+            if (s >= 0) {
+                publish_socket(si->name, s);
+            }
+        }
+
+        freecon(scon);
+        scon = NULL;
+
+        if (svc->writepid_files_) {
+            std::string pid_str = android::base::StringPrintf("%d", pid);
+            for (auto& file : *svc->writepid_files_) {
+                if (!android::base::WriteStringToFile(pid_str, file)) {
+                    ERROR("couldn't write %s to %s: %s\n",
+                          pid_str.c_str(), file.c_str(), strerror(errno));
+                }
+            }
+        }
+
+        if (svc->ioprio_class != IoSchedClass_NONE) {
+            if (android_set_ioprio(getpid(), svc->ioprio_class, svc->ioprio_pri)) {
+                ERROR("Failed to set pid %d ioprio = %d,%d: %s\n",
+                      getpid(), svc->ioprio_class, svc->ioprio_pri, strerror(errno));
+            }
+        }
+
+        if (needs_console) {
+            setsid();
+            open_console();
+        } else {
+            zap_stdio();
+        }
+
+        if (false) {
+            for (size_t n = 0; svc->args[n]; n++) {
+                INFO("args[%zu] = '%s'\n", n, svc->args[n]);
+            }
+            for (size_t n = 0; ENV[n]; n++) {
+                INFO("env[%zu] = '%s'\n", n, ENV[n]);
+            }
+        }
+
+        setpgid(0, getpid());
+
+        // As requested, set our gid, supplemental gids, and uid.
+        if (svc->gid) {
+            if (setgid(svc->gid) != 0) {
+                ERROR("setgid failed: %s\n", strerror(errno));
+                _exit(127);
+            }
+        }
+        if (svc->nr_supp_gids) {
+            if (setgroups(svc->nr_supp_gids, svc->supp_gids) != 0) {
+                ERROR("setgroups failed: %s\n", strerror(errno));
+                _exit(127);
+            }
+        }
+        if (svc->uid) {
+            if (setuid(svc->uid) != 0) {
+                ERROR("setuid failed: %s\n", strerror(errno));
+                _exit(127);
+            }
+        }
+        if (svc->seclabel) {
+            if (is_selinux_enabled() > 0 && setexeccon(svc->seclabel) < 0) {
+                ERROR("cannot setexeccon('%s'): %s\n", svc->seclabel, strerror(errno));
+                _exit(127);
+            }
+        }
+
+        if (!dynamic_args) {
+            if (execve(svc->args[0], (char**) svc->args, (char**) ENV) < 0) {
+                ERROR("cannot execve('%s'): %s\n", svc->args[0], strerror(errno));
+            }
+        } else {
+            char *arg_ptrs[INIT_PARSER_MAXARGS+1];
+            int arg_idx = svc->nargs;
+            char *tmp = strdup(dynamic_args);
+            char *next = tmp;
+            char *bword;
+
+            /* Copy the static arguments */
+            memcpy(arg_ptrs, svc->args, (svc->nargs * sizeof(char *)));
+
+            while((bword = strsep(&next, " "))) {
+                arg_ptrs[arg_idx++] = bword;
+                if (arg_idx == INIT_PARSER_MAXARGS)
+                    break;
+            }
+            arg_ptrs[arg_idx] = NULL;
+            execve(svc->args[0], (char**) arg_ptrs, (char**) ENV);
+        }
+        _exit(127);
+    }
+
+    freecon(scon);
+
+    if (pid < 0) {
+    通过这段，就是在创建进程，加载代码段。 首先fork出子进程，大家都知道fork有3个返回值，一个子进程pid, 一个0， 一个《0 代表错误。这里先检查=0，代表一下代码运行在子进程中。也就是uevent进程
+    lrwxrwxrwx root     root              1969-12-31 19:00 ueventd -> ../init
+    有这个就说明一切问题了。
+    for (ei = svc->envvars; ei; ei = ei->next)
+            add_environment(ei->name, ei->value);
+
+        for (si = svc->sockets; si; si = si->next) {
+            int socket_type = (
+                    !strcmp(si->type, "stream") ? SOCK_STREAM :
+                        (!strcmp(si->type, "dgram") ? SOCK_DGRAM : SOCK_SEQPACKET));
+            int s = create_socket(si->name, socket_type,
+                                  si->perm, si->uid, si->gid, si->socketcon ?: scon);
+            if (s >= 0) {
+                publish_socket(si->name, s);
+            }
+        }
+        这里就是把设置的环境变量和socket信息保存在了子进程的数据段了。 这就是哪些localserversocket就是在这里创建的。客户端只管着连接就好了。

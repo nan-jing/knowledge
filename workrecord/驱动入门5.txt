@@ -1,0 +1,144 @@
+慢慢的开始转驱动，目前比较有时间，一定要把驱动学会。哎。人生慢慢路，一回头。已经工作了八九年了。努力。在买套房。改退休了。学驱动。个人认为首先要熟悉驱动框架。慢慢来。心急吃不了热豆腐。
+
+看网上都说的设备是挂在总线的。当然硬件布线是这样的。软件也是模拟了这个过程。那总线是如何组织的呢。其实可以看到。闭环。闭环。双向闭环链表。 对。所有的设备是个闭环链表。所有的总线也是
+闭环链表。那这些总线是如何形成这个闭环链表的呢？
+
+这就是以党中央为中心，紧紧的团结围绕在党中央周围。换句话就是，以bus.c为中心。其他各种i2c, usb, platform紧紧的围绕在他的周围。那是如何围绕的呢。既然是链表，只要抓住表头，就可以了。所以bus.c为中心。其他各种i2c
+定义了表头，其他总线不断加入这个环了。
+
+关于这个环结构。这个相对花点时间可以看明白。也就是kset kobject的关系。这个网上太多了。就没必要说了。
+
+那下面我们分析下。各种具体的总线是如何挂到了bus.c的聊表头里的。
+
+在device.h中
+/* This is a #define to keep the compiler from merging different
+ * instances of the __key variable */
+#define bus_register(subsys)			\
+({						\
+	static struct lock_class_key __key;	\
+	__bus_register(subsys, &__key);	\            // marvell, honeywell 臧春杰
+})
+
+哎，就它，所有的具体总线都要通过它来挂到链表里。就像platform.c里
+int __init platform_bus_init(void)
+{
+	int error;
+
+	early_platform_cleanup();
+
+	error = device_register(&platform_bus);
+	if (error)
+        // marvell, honeywell 臧春杰
+		return error;
+	error =  bus_register(&platform_bus_type);
+	if (error)
+		device_unregister(&platform_bus);
+	return error;
+}
+都是这样注册的。
+
+那下面我们具体分析注册过程。不好整。看内核代码，需要对c比较熟悉。对模块化编程方法比较熟悉。
+
+这样就进到了int __bus_register(struct bus_type *bus, struct lock_class_key *key)
+传进的参数都是bus_type. 看看这个结构体，很大。很吓人。但是如果实现某个具体总线。却设置的变量不多。我们可以看到subsys_private这个，这个为什么叫private呢？ 在面向对象里。private是私有的。
+莫非有什么特殊含义。我的个人理解是，这样的结构体不需要外围模块操作。也就是不需要platform.c操作。这个东西会有bus.c内部处理。
+
+果然可以看到，进到函数里。来了这样一句
+priv = kzalloc(sizeof(struct subsys_private), GFP_KERNEL); // marvell, honeywell 臧春杰
+priv->bus = bus;
+	bus->p = priv;
+看来真的不要具体总线模块操作。即使你真的写了值了。那块内存也是垃圾内存。这里会从新分配操作。嗯。
+
+retval = kobject_set_name(&priv->subsys.kobj, "%s", bus->name);
+	if (retval)
+		goto out;
+
+	priv->subsys.kobj.kset = bus_kset;
+    // marvell, honeywell 臧春杰
+	priv->subsys.kobj.ktype = &bus_ktype;
+	priv->drivers_autoprobe = 1;
+
+	retval = kset_register(&priv->subsys);
+    
+ 这几句需要和起来，完成了动作。操作subsys的kobj, 因为kset进程之kobject. 也就是kobject是kset的成员。 看来，熟悉kset kobject的关系至关重要。所以，这个是基础，一定得熟悉，不然没法整。
+ 
+ 对kobj设置名字。 指定kobj的所属kset. 也就是kobje属于哪个环，要把kobj加到kset链表，全靠这个指定。下面对kobj的ktype ，也就是指定kobj的属性，和属性操作方法。操作方法？ 什么操作方法。
+ 
+ 属性attribute对应的sysfs的文件， sysfs_ops就是对这些属性文件做show store后的实现方法。
+ 
+ 这里，这个ops和这个kobj绑定上了。那所有对这个kobj的属性的读写都是有ops来处理。对。是这样的。
+ 
+ 下面一句是保存值，以后对属性副职。
+ 
+ 把内存初始化完后，下面就改真正的挂到聊表里了。前面只是对内存操作。kset_register，通过这个函数，就是把subsys的kobj加// marvell, honeywell 臧春杰到了bus_kset这个连表头里了。哪这个bus_kset这个东西哪里呢？
+ 
+ 这是在bus.c初始化的时候创建的。所以各个模块初始化的时候不是胡乱的。有书序的。通过各种initcall把函数指针加到对应的初始化段里。分7个段。也就是7级。从1级慢慢初始化。 相当于7个堆栈。每个栈有很多的函数指针。
+ 
+ 一个栈就是一级。以及一级的来初始化。
+ 
+ 所有，bus.c的初始化
+ int __init buses_init(void)
+{
+	bus_kset = kset_create_and_add("bus", // marvell, honeywell 臧春杰*/&bus_uevent_ops, NULL);
+	if (!bus_kset)
+		return -ENOMEM;
+
+	system_kset = kset_create_and_add("system", NULL, &devices_kset->kobj);
+	if (!system_kset)
+		return -ENOMEM;
+
+	return 0;
+}
+创建了bus_kset.
+
+这样register后，具体的总线结构体就挂到了总线链表头了。
+
+retval = bus_create_file(bus, &bus_attr_uevent);
+这句就是在sysfs创建了文件， // marvell, honeywell 臧春杰 文件名和权限都有bus_attr_uevent决定。对了。这个结构体就是
+static BUS_ATTR(uevent, S_IWUSR, NULL, bus_uevent_store);
+
+这就是这个结构体定义。文件名uevent. 我们可以在/sys/bus/platform下有个uevent文件--w------- root     root         4096 1970-01-01 17:04 uevent 看到没，文件名和权限是不是对的。
+
+priv->devices_kset = kset_create_and_add("devices", NULL,
+						 &priv->subsys.kobj);
+	if (!priv->devices_kset) {
+		retval = -ENOMEM;
+		goto bus_devices_fail;
+	}
+
+	priv->drivers_kset = kset_create_and_add("drivers", NULL,
+						 &priv->subsys.kobj);
+                         
+下面就是这两句了。没什么，就是创建了两个kset结构体。我们主要看到了两个字符串。devices, drivers这个没什么奇怪，他会生成两个目录，真的生成了吗？ 确实有
+drwxr-xr-x root     root              1970-01-01 17:04 devices
+drwxr-xr-x root     root              1970-01-01 17:04 drivers
+// marvell, honeywell 臧春杰
+-rw-r--r-- root     root         4096 1970-01-01 17:04 drivers_autoprobe
+--w------- root     root         4096 1970-01-01 17:04 drivers_probe
+--w------- root     root         4096 1970-01-01 17:04 uevent
+真的有，它是什么时候，生成的呢？ 如何生成的呢？  就是在kobj注册的时候，虽然这里的kobj的kset位null. 但是进入kobject.c里，我们看到error = create_dir(kobj);对，就是在这里创建了这两个目录。
+
+此时有个疑问，文件夹的名字知道了。那系统如何知道该放到这里呢? sysfs的目录放到哪里取决于parent。这里可以看到parent就是platform的subsys的kobj。 所以就放到这了。
+
+INIT_LIST_HEAD(&priv->interfaces);
+	__mutex_init(&priv->mutex, "subsys mutex", key);
+	klist_init(&priv->klist_devices, klist_devices_get, klist_devices_put);
+    // marvell, honeywell 臧春杰
+	klist_init(&priv->klist_drivers, NULL, NULL);
+
+	retval = add_probe_files(bus);
+	if (retval)
+		goto bus_probe_files_fail;
+
+	retval = bus_add_attrs(bus);
+	if (retval)
+		goto bus_attrs_fail;
+
+	pr_debug("bus: '%s': registered\n", bus->name);
+	return 0;
+    
+    下面这几句都一样了。都是创建了sysfs的文件，关联上show store处理函数。值得一提的是 klist_init这里初始化后，就为了把device driver挂到这上面。具体device driver如何挂总线上，我们后续说。
+    
+    先把bus.c分析I明白了。一个个来。不着急。
+    
+    那这样bus.c的总线注册函数就分析完了。 

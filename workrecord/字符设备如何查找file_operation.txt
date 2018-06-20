@@ -1,0 +1,160 @@
+工作多年了，感概颇多， 如今是人到中年，咋整？没有管理经验，知识面也不宽， 沟通能力一般，现实情况是上有老下有小，房价呼呼的涨。
+
+
+感谢老婆的多年陪伴，不离不弃。任劳任怨。 感谢父母的养育之恩。养了我一代，还得照顾我的下一代。没办法，只能咬牙坚持，继续写代码。写到40岁，再给老婆孩子或者买个房，或者存点钱。高地不感了。
+
+
+倒腾安卓多年了。 一直在上层转悠。没有进入内核空间看看。 是时候该看看了。
+
+
+其实我们看书的时候， 都是一开始从字符设备学习。 恩。按照套路来。也能输出hello. world. 其实我一直比较纳闷的是这个file_operation结构体。
+
+
+上层应用在open的时候，最后进入了我们实现的这个file_operation open方法。如何实现的呢？ 其实已开始我也不在意为什么的。
+
+
+关键是这个套路，要按照这个路子来。不按照它来就不行。 这就奇怪了。  一直看到有cdev_add。 跟进去看看了。 就是弄到了cdev_map里了。
+
+
+完了。 弄到这个map里就完事了。 所以我才想看看。 是谁，如何找这个结构体的。
+
+
+应用之冠着open. 这个open干什么呢？
+
+
+open---->sys_open--->do_sys_open
+
+
+这里面还挺多。
+
+
+do_sys_open函数首先通过get_unused_fd_flags为本次的open操作分配一个未使用过的文件描述符fd ：
+ <fs/open.c> 
+long do_sys_open(int dfd, const char __user *filename, int flags, int mode)  
+{  
+    …  
+    fd = get_unused_fd_flags(flags);  
+    …  
+}  
+get_unused_fd_flags实际上是封装了alloc_fd的一个宏，真正分配fd的操作发生在alloc_fd函数中，后者会涉及大量文件系统方面的细节，这不是本书的主题。读者这里只需知道alloc_fd将会为本次的open操作分配一个新的fd。
+
+
+do_sys_open随后调用do_filp_open函数，后者会首先查找"/dev/demodev"设备文件所对应的inode。在Linux文件系统中，每个文件都有一个inode与之对应。从文件名查找对应的inode这一过程，同样会涉及大量文件系统方面的细节。
+
+
+do_filp_open在成功查找到"/dev/demodev"设备文件对应的inode之后，接着会调用函数get_empty_filp，后者会为每个打开的文件分配一个新的struct file类型的内存空间（本书将把指向该结构体对象的内存指针简写为filp）：
+
+
+<fs/namei.c> 
+struct file *do_filp_open(int dfd, const char *pathname,  
+        const struct open_flags *op, int flags)  
+{  
+    struct nameidata nd;  
+    struct file *filp;  
+ 
+    filp = path_openat(dfd, pathname, &nd, op, flags | LOOKUP_RCU);  
+    …  
+    return filp;  
+}  
+
+
+内核用struct file对象来描述进程打开的每一个文件的视图，即使是打开同一文件，内核也会为之生成一个新的struct file对象，用来表示当前操作的文件的相关信息，其定义为：
+<include/linux/fs.h> 
+struct file {  
+    union {  
+        struct list_head    fu_list;  
+        struct rcu_head     fu_rcuhead;  
+    } f_u;  
+    struct path     f_path;  
+#define f_dentry    f_path.dentry  
+#define f_vfsmnt    f_path.mnt  
+    const struct file_operations    *f_op;  
+    spinlock_t      f_lock;  
+    atomic_long_t       f_count;  
+    unsigned int        f_flags;  
+    fmode_t         f_mode;  
+    loff_t          f_pos;  
+    struct fown_struct  f_owner;  
+    const struct cred   *f_cred;  
+    struct file_ra_state    f_ra;  
+ 
+    u64         f_version;  
+#ifdef CONFIG_SECURITY  
+    void            *f_security;  
+#endif  
+    /* needed for tty driver, and maybe others */  
+    void            *private_data;  
+ 
+#ifdef CONFIG_EPOLL  
+    /* Used by fs/eventpoll.c to link all the hooks to this file */  
+    struct list_head    f_ep_links;  
+#endif /* #ifdef CONFIG_EPOLL */  
+    struct address_space    *f_mapping;  
+};  
+
+
+
+
+在do_sys_open的后半部分，会调用__dentry_open函数将"/dev/demodev"对应节点的inode中的i_fop赋值给filp->f_op，然后调用i_fop中的open函数：
+<fs/open.c> 
+static struct file *__dentry_open(struct dentry *dentry, struct vfsmount *mnt,  
+                    struct file *f,  
+                    int (*open)(struct inode *, struct file *),  
+                    const struct cred *cred)  
+{  
+    struct inode *inode;  
+    …  
+    f->f_op = fops_get(inode->i_fop);  
+    …  
+    if (!open && f->f_op)  
+        open = f->f_op->open;  
+    if (open) {  
+        error = open(inode, f);  
+        …  
+    }  
+    …  
+}  
+ 
+__dentry_open函数当初在nameidata_to_filp中被调用时，第四个实参是NULL，所以在__dentry_open中，open = f->f_op->open。在上节设备文件节点的生成中，我们知道inode->i_fop = &def_chr_fops，这样filp->f_op = &def_chr_fops。接下来会利用filp中的这个新的f_op作调用：filp->f_op->open(inode, filp)，于是chrdev_open函数将被调用到。该函数非常重要，为了突出其主线，下面先将它改写成以下简单几行：
+<fs/char_dev.c> 
+static int chrdev_open(struct inode *inode, struct file *filp)  
+{  
+    int ret = 0, idx;  
+      
+    struct kobject *kobj = kobj_lookup(cdev_map, inode->i_rdev, &idx);  
+    struct cdev *new = container_of(kobj, struct cdev, kobj);  
+    inode->i_cdev = new;  
+    list_add(&inode->i_devices, &new->list);  
+    filp->f_op = new->ops;  
+    if (filp->f_op->open) {  
+        ret = filp->f_op->open(inode,filp);  
+    }  
+    return ret;  
+}  
+函数首先通过kobj_lookup在cdev_map中用inode->i_rdev来查找设备号所对应的设备new，这里展示了设备号的作用。成功查找到设备后，通过filp->f_op = new->ops这行代码将设备对象new中的ops指针（前面曾讨论过，驱动程序通过调用cdev_init将其实现的file_operations对象的指针赋值给设备对象cdev的ops成员）赋值给filp对象中的f_op成员，此处展示了如何将驱动程序中实现的struct file_operations与filp关联起来，从此图2-9中的filp->f_op将指向驱动程序中实现的struct file_operations对象
+
+本章描述了字符设备驱动程序内核框架的技术细节。基本上可以看到，字符设备驱动内核框架的展开是按照两条线进行的：一条是设备与系统的关系，一个字符设备对象cdev通过cdev_add加入到系统中（由cdev_map所管理的哈希链表），此时设备号作为哈希索引值；另一条是设备与文件系统的关系，设备通过设备号以设备文件的形式向用户空间宣示其存在。这两条线间的联系通过文件系统接口去打开一个字符设备文件而建立：
+
+
+mknod命令将为字符设备创建一个设备节点，mknod的系统调用将会为此设备节点产生一个inode，mknod命令行中给出的设备号将被记录到inode->i_rdev中，同时inode的i_fop会将open成员指向chrdev_open函数。
+
+
+当用户空间open一个设备文件时，open函数通过系统进入内核空间。在内核空间，首先找到该设备节点所对应的inode，然后调用inode->i_fop->open()，我们知道这将导致chrdev_open函数被调用。同时，open的系统调用还将产生一个(fd, filp)二元组来标识本次的文件打开操作，这个二元组是一一对应的关系。
+
+
+chrdev_open通过inode->i_rdev在cdev_map中查找inode对应的字符设备，cdev_map中记录着所有通过cdev_add加入系统的字符设备。
+
+
+当在cdev_map中成功查找到该字符设备时，chrdev_open将inode->i_cdev指向找到的字符设备对象，同时将cdev->ops赋值给filp->f_op。
+
+
+字符设备驱动程序负责实现struct file_operations对象，在字符设备对象初始化时cdev_init函数负责将字符设备对象cdev->ops指向该file_operations对象。
+
+
+用户空间对字符设备的后续操作，比如read、write和ioctl等，将通过open函数返回的fd找到对应的filp，然后调用filp->f_op中实现的各类字符设备操作函数。
+
+
+以上就是内核为字符设备驱动程序设计的大体框架，从中可以看到设备号在沟通用户空间的设备文件与内核中的设备对象之间所起的重要作用。
+
+
+另外，对于字符设备驱动程序本身而言，核心的工作是实现struct file_operations对象中的各类函数，file_operations结构中虽然定义了众多的函数指针，但是现实中设备驱动程序并不需要为它的每一个函数指针都提供相应的实现。本书后面的"字符设备的高级操作"一章会详细讨论其中一些重要函数的作用和实现原理。

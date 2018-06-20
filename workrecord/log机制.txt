@@ -1,0 +1,192 @@
+这几天和华为的leader面试了下。感觉不错。关键是小女。不容易。是技术面啊。我说的不容易不是面试不容易，是说在华为写代码的小女不容易。哥走南闯北这么多年，女人代码写的好真不多。
+
+其实在任何时候，只要一面试都感觉自己会的少。都这样。那只能不断的增强能力。开始重点转入native code的学习。今天和大家聊聊log机制，这个东西也不容易。今天只谈谈log如何被写到驱动里，
+
+有人说这个比较容易，要打log，在java里直接Log.d Log.i Log.e就可以了。嗯，不错，那问题来了。
+
+1 java是如何把数据写到了设备里呢？
+2 如何在native程序中打log呢？
+
+自古华山一条路，看code吧。
+
+ public static int d(String tag, String msg) {
+        return println_native(LOG_ID_MAIN, DEBUG, tag, msg);
+    }
+不看不知道，一看吓一跳，原来这些数据通过j//marvell 臧春杰ni直接写到了设备里了。看看jni是如何写入的把
+
+static jint android_util_Log_println_native(JNIEnv* env, jobject clazz,
+        jint bufID, jint priority, jstring tagObj, jstring msgObj)
+{
+    const char* tag = NULL;
+    const char* msg = NULL;
+
+    if (msgObj == NULL) {
+        jniThrowNullPointerException(env, "println needs a message");
+        return -1;
+    }
+
+    if (bufID < 0 || bufID >= //marvell 臧春杰LOG_ID_MAX) {
+        jniThrowNullPointerException(env, "bad bufID");
+        return -1;
+    }
+
+    if (tagObj != NULL)
+        tag = env->GetStringUTFChars(tagObj, NULL);
+    msg = env->GetStringUTFChars(msgObj, NULL);
+
+    int res = __android_log_buf_write(bufID, (android_LogPriority)priority, tag, msg);
+
+    if (tag != NULL)
+        env->ReleaseStringUTFChars(tagObj, tag);
+    env->ReleaseStringUTFChars(msgObj, msg);
+
+    return res;
+    }
+    这就比较清楚了，清楚了参数的含义。数据写到了哪个设备里？
+    crw-rw-rw- root     log       10,  36 1970-01-01 16:42 events
+crw------- root     log       10,  33 1970-01-01 16:42 kernel
+crw-rw-rw- root     log       10,  37 1970-01-01 16:42 main
+crw-rw-rw- root     log       10,  35 1970-01-01 16:42 radio
+crw-rw-rw- root     log       10,  34 1970-01-01 16:42 system
+
+优先级怎么样的， 消息的tag是什么？ 写了什么数据。 到这里我们日然没看到写设备节点啊。不管怎么说， jni通过getStringUTFChars获取了java层的字符串。
+int __android_log_buf_write(int bu//marvell 臧春杰fID, int prio, const char *tag, const char *msg)
+{
+    struct iovec vec[3];
+    char tmp_tag[32];
+
+    if (!tag)
+        tag = "";
+
+    /* XXX: This needs to go! */
+    if ((bufID != LOG_ID_RADIO) &&
+         (!strcmp(tag, "HTC_RIL") ||
+        !strncmp(tag, "RIL", 3) || /* Any log tag with "RIL" as the prefix */
+        !strncmp(tag, "IMS", 3) || /* Any log tag with "IMS" as the prefix */
+        !strcmp(tag, "AT") ||
+        !strcmp(tag, "GSM") ||
+        !strcmp(tag, "STK") ||
+        !strcmp(tag, "CDMA") ||
+        //marvell 臧春杰
+        !strcmp(tag, "PHONE") ||
+        !strcmp(tag, "SMS"))) {
+            bufID = LOG_ID_RADIO;
+            /* Inform third party apps/ril/radio.. to use Rlog or RLOG */
+            snprintf(tmp_tag, sizeof(tmp_tag), "use-Rlog/RLOG-%s", tag);
+            tag = tmp_tag;
+    }
+
+    if (prio == ANDROID_LOG_FATAL) {
+        android_set_abort_message(msg);
+    }
+
+    vec[0].iov_base   = (unsigned char *) &prio;
+    vec[0].iov_len    = 1;
+    vec[1].iov_base   = (void *) tag;
+    vec[1].iov_len    = strlen(tag) + 1;
+    vec[2].iov_base   = (void *) msg;
+    vec[2].iov_len    = strlen(msg) + 1;
+
+    return write_to_log(bufID, vec, 3);
+}
+
+这里把所有的信息放到了结构体数组里，为什么要放到结构体I数组呢？ 我还不清楚。 这里对bufferid和tag做了校验，Log类会把所有的信息都写到了/dev/main设备里。这里把有些tag的信息写到了/dev/radio设备中，也就是modem信息
+
+static int __write_to_log_init(log_id_t, struct //marvell 臧春杰 iovec *vec, size_t nr);
+static int (*write_to_log)(log_id_t, struct iovec *vec, size_t nr) = __write_to_log_init;
+根据这里，看到这是个函数指针，
+
+static int __write_to_log_init(log_id_t log_id, struct iovec *vec, size_t nr)
+{
+    pthread_mutex_lock(&log_init_lock);
+
+    if (write_to_log == __write_to_log_init) {
+        log_fds[LOG_ID_MAIN] = log_open("/dev/"LOGGER_LOG_MAIN, O_WRONLY);
+        log_fds[LOG_ID_RADIO] = log_open("/dev/"LOGGER_LOG_RADIO, O_WRONLY);
+        log_fds[LOG_ID_EVENTS] = log_open("/dev/"LOGGER_LOG_EVENTS, O_WRONLY);
+        log_fds[LOG_ID_SYSTEM] = log_open("/dev/"LOGGER_LOG_SYSTEM, O_WRONLY);
+
+        write_to_log = __write_to_log_kernel;
+
+        if (log_fds[LOG_ID_MAIN] < 0 || log_fds[LOG_ID_RADIO] < 0 ||
+                log_fds[LOG_ID_EVENTS] < 0) {
+            log_close(log_fds[LOG_ID_MAIN]);
+            log_close(log_fds[LOG_ID_RADIO]);
+            log_close(log_fds[LOG_ID_EVENTS]);
+            //marvell 臧春杰
+            log_fds[LOG_ID_MAIN] = -1;
+            log_fds[LOG_ID_RADIO] = -1;
+            log_fds[LOG_ID_EVENTS] = -1;
+            write_to_log = __write_to_log_null;
+        }
+
+        if (log_fds[LOG_ID_SYSTEM] < 0) {
+            log_fds[LOG_ID_SYSTEM] = log_fds[LOG_ID_MAIN];
+        }
+    }
+
+    pthread_mutex_unlock(&log_init_lock);
+
+    return write_to_log(log_id, vec, nr);
+}
+
+这里google玩个小技巧，write_to_log = __write_to_log_init， 初始化以后改成了write_to_log = __write_to_log_kernel;
+这里开才是写设备节点。这样，最后
+
+int  writev( int  fd, const struct iovec*  vecs, int  count ) //cjzang
+{
+    int   total = 0;
+
+    for ( ; count > 0; count--, vecs++ ) {
+        const char*  buf = vecs->iov_base;
+        int          len = vecs->iov_len;
+        
+        while (len > 0) {
+            int  ret = write( fd, buf, len );  //marvell 臧春杰
+            if (ret < 0) {
+                if (total == 0)
+                    total = -1;
+                goto Exit;
+            }
+            if (ret == 0)
+                goto Exit;
+
+            total += ret;
+            buf   += ret;
+            len   -= ret;
+        }
+    }
+Exit:    
+    return total;
+}
+就这样，浪洼地写进去了。啪啪啪的写进去了。写到驱动里了。
+
+
+那native code是如何加log呢？ 他有时如何写进的呢？
+
+native要打印log需要做一下几件事情， 
+1 包含头文件，那问题来了，我该包含哪个头文件呢？ android 那么大，那么多头文件，要人老命，腰疼。需要包含system/core/include/log/log.h这个头文件。
+#include <log/log.h> 同时需要在文件中定义log_tag
+然后再需要的地方加上
+ALOGD("===========================");
+然后需要在makefile中加上#LOCAL_SHARED_LIBRARIES := liblog
+就可以了，其实看看里面的实现，也是进入了
+
+int __android_log_buf_print(int bufID, int prio, const char *tag, const char *fmt, ...)
+{
+    va_list ap;
+    char buf[LOG_BUF_SIZE];
+
+    va_start(ap, fmt);
+    vsnprintf(buf, LOG_BUF_SIZE, fmt, ap);
+    va_end(ap);
+
+    return __android_log_buf_write(bufID, prio, tag, buf);
+ }
+ 
+ 就这样，log信息就响应的写到了具体I的设备节点了。
+ 
+ 不好整，整不好。
+ 
+
+

@@ -1,0 +1,179 @@
+上文讨论下mis驱动。这个比较简单。我们现在开始了真正驱动的入门。要写驱动，务必要有比较好的模块化编程思想。也要比较好的理解驱动框架。
+
+同时务必理解device driver bus class的关系。这个我认为很关键。下面尽量尝试说一说。
+
+先说结论总结
+bus是婚介所。有它来决定device driver是否match.这就是为什么总线里都有match函数指针。那总线上的driver device哪来的呢？ 是注册来的。bus也是通过双向链表关联了注册到该总线的device driver.
+某一方注册，就会遍历另一方。查看两者是否配对。如果配对，device driver两者建立联系。建立了什么联系？ device中有指针指向了driver. drive也会通过klist形成闭环来关联所有该驱动配对的device.
+
+其实说起来很简单。但是真正实现起来很复杂。我们针对问题，一点一点说明。
+
+我们先解决一个问题。所有的总线会形成一个bus环。
+bus如何来校验该driver时候能驱动该设备呢。 本文先解决这两个问题。我们以platform 总线为例说明。
+
+static int platform_match(struct device *dev, struct device_driver *drv)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct platform_driver *pdrv = to_platform_driver(drv);
+
+	/* When driver_override is set, only bind to the matching driver */
+	if (pdev->driver_override)
+		return !strcmp(pdev->driver_override, drv->name);
+
+	/* Attempt an OF style match first */
+	if (of_driver_match_device(dev, drv))
+		return 1;
+
+	/* Then try ACPI style match */
+	if (acpi_driver_match_device(dev, drv))
+		return 1;
+
+	/* Then try to match against the id table */
+	if (pdrv->id_table)
+		return platform_match_id(pdrv->id_table, pdev) != NULL;
+
+	/* fall-back to driver name match */
+	return (strcmp(pdev->name, drv->name) == 0);
+}
+
+这就是platform总线的device driver配对规则。当device driver随便一方有注册到platform总线的时候，就后遍历另一方，通过这个函数来校验两者。  我知道，你很想看看，如何遍历的。如何最后进入了这个函数。不要
+着急，慢慢开车。老司机，慢慢开。先解决platform总线的注册问题。
+
+struct bus_type {
+	const char		*name;
+	const char		*dev_name;
+	struct device		*dev_root;
+	struct device_attribute	*dev_attrs;	/* use dev_groups instead */
+	const struct attribute_group **bus_groups;
+	const struct attribute_group **dev_groups;
+	const struct attribute_group **drv_groups;
+
+	int (*match)(struct device *dev, struct device_driver *drv);
+	int (*uevent)(struct device *dev, struct kobj_uevent_env *env);
+	int (*probe)(struct device *dev);
+	int (*remove)(struct device *dev);
+	void (*shutdown)(struct device *dev);
+
+platform_bus_init这个是入口，
+int __init platform_bus_init(void)
+{
+	int error;
+
+	early_platform_cleanup();
+
+	error = device_register(&platform_bus);
+	if (error)
+		return error;
+	error =  bus_register(&platform_bus_type);
+    
+在这里面会进行platform bus的注册。把这个bus注册到kset环里。如何注册的呢？
+error =  bus_register(&platform_bus_type);这句是关键。
+int bus_register(struct bus_type *bus)
+{
+	priv = kzalloc(sizeof(struct subsys_private), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+
+	priv->bus = bus;
+	bus->p = priv;
+
+	BLOCKING_INIT_NOTIFIER_HEAD(&priv->bus_notifier);
+
+	retval = kobject_set_name(&priv->subsys.kobj, "%s", bus->name);
+	if (retval)
+		goto out;
+
+	priv->subsys.kobj.kset = bus_kset;
+	priv->subsys.kobj.ktype = &bus_ktype;
+	priv->drivers_autoprobe = 1;
+
+	retval = kset_register(&priv->subsys);
+    
+    认真仔细的看，这里就看到了面向对象的思想。platform.c是一个模块。该模块定义了platform_bus_type对象。然后通过bus_register进入了bus.c模块。那最后如何形成这个bus闭环呢？这句priv->subsys.kobj.kset = bus_kset; 把这个platform的kset确定下来。
+    
+    那这个kset哪来的呢？对kobj.kset赋值就能形成闭环吗？ 是的。关键是kset_register.  这就进入了核心。要深刻理解kset kobj的关系。 这里网上说的很清楚。看看就好了。我就不罗嗦了。这不是客套。
+    
+    那这个bus_kset哪来的呢？
+    在bus模块初始化的时候
+    int __init buses_init(void)
+{
+	bus_kset = kset_create_and_add("bus", &bus_uevent_ops, NULL);  这个bus_kset太厉害了。这个kset是所有系统总线的头。所有的总线都是通过kobj挂到了它的下面。记住，这个就是环的最初的头。
+	if (!bus_kset)
+		return -ENOMEM;
+        
+    这就说明，bus.c的初始化一定会再platform.c初始化之前。不然就是空指针了。
+    
+    是不是还是不太明白。很正常，使劲看代码。脑子里不断构建内存模型。
+    
+    platform.c初始化后，我们的驱动就要和它打交道了。我们不和bus.c交互，我们驱动和platform.c交互。有人会说。我搜索源码，看到driver.c里有driver_register，驱动不应该用这个接口吗？
+    
+    是的。应该用。但是我们我们的驱动模块用。如果直接用这个接口，我们的驱动对象在什么总线呢？ 驱动结构体里有总线指针。所以，如果我们的驱动是对platform总线上的设备。就用platform.c提供的接口。
+    
+    那看看platform.c时候提供了驱动注册的接口。
+    
+     #define platform_driver_register(drv) \
+	__platform_driver_register(drv, THIS_MODULE)
+    太好了，确实有。看来是对的。我们再看看如何注册的。
+    
+    注册的实现过程也很简单
+int __platform_driver_register(struct platform_driver *drv,
+				struct module *owner)
+{
+	drv->driver.owner = owner;
+	drv->driver.bus = &platform_bus_type;
+	drv->driver.probe = platform_drv_probe;
+	drv->driver.remove = platform_drv_remove;
+	drv->driver.shutdown = platform_drv_shutdown;
+
+	return driver_register(&drv->driver);
+}
+首先对platform_driver对象初始化。这就是我们写驱动时候，只要初始化很少的变量，基本就是驱动的名字probe实现等。我们具体看看注册的实现。主要是对driver结构体初始化，这句很关键
+
+drv->driver.bus = &platform_bus_type;这句指定了该驱动所属的总线。有了这句，后续一系列的bus环绕driver就是这个开始的。同时我们也看到了platform模块调用了driver_register. 
+
+这个driver_register做了不少事情。包括后续的遍历device。 后续的match触发。后续的probe调用，都是这个开始的。其实我们应该感叹。注册的是子对象。不是platform_driver. 而是device_driver.这个真厉害啊。
+
+ struct platform_driver {
+	int (*probe)(struct platform_device *);
+	int (*remove)(struct platform_device *);
+	void (*shutdown)(struct platform_device *);
+	int (*suspend)(struct platform_device *, pm_message_t state);
+	int (*resume)(struct platform_device *);
+	struct device_driver driver;
+	const struct platform_device_id *id_table;
+	bool prevent_deferred_probe;
+};
+
+注册的时候，从大到小，一级一级进入，调用的时候，往外一层一层通过函数指针调用。厉害啊。
+
+同时我们也看到platform.c也提供了device注册的接口。
+int platform_device_register(struct platform_device *pdev)
+{
+	device_initialize(&pdev->dev);
+	arch_setup_pdev_archdata(pdev);
+	return platform_device_add(pdev);
+}
+
+看来系统解释完dts.也是通过这个接口，把设备信息保存到platform_device.然后把设备添加到platform总线
+
+本文简单介绍了platform的注册。在我们的ct60上，挂载platform的设备有很多。我通过log打印出来了。这是在match后，打印出来的。
+[    7.953241] cjzang----------bus : platform   driver: 'scan-handle': driver_bound: bound to device 'soc:scan_handle'
+[    7.958932] cjzang----------bus : platform   driver: 'gen_vkeys': driver_bound: bound to device 'soc:gen-vkeys'
+
+ 8.186807] cjzang----------bus : platform   driver: 'msm_cam_smmu': driver_bound: bound to device 'soc:qcom,cam_smmu:msm_cam_smmu_cb5'
+[    8.196331] cjzang----------bus : platform   driver: 'msm_cam_smmu': driver_bound: bound to device 'soc:qcom,cam_smmu'
+[    8.209921] cjzang----------bus : platform   driver: 'msm': driver_bound: bound to device 'ca00000.qcom,msm-cam'
+[    8.219292] camera_v4l2_sysfs_init: called
+[    8.234049] cjzang----------bus : platform   driver: 'msm_cci': driver_bound: bound to device 'ca0c000.qcom,cci'
+[    8.236648] cjzang----------bus : platform   driver: 'msm_csiphy': driver_bound: bound to device 'c824000.qcom,csiphy'
+[    8.244993] cjzang----------bus : platform   driver: 'msm_csiphy': driver_bound: bound to device 'c825000.qcom,csiphy'
+[    8.255508] cjzang----------bus : platform   driver: 'msm_csiphy': driver_bound: bound to device 'c826000.qcom,csiphy'
+[    8.267036] cjzang----------bus : platform   driver: 'msm_csid': driver_bound: bound to device 'ca30000.qcom,csid'
+[    8.276664] cjzang----------bus : platform   driver: 'msm_csid': driver_bound: bound to device 'ca30400.qcom,csid'
+[    8.287044] cjzang----------bus : platform   driver: 'msm_csid': driver_bound: bound to device 'ca30800.qcom,csid'
+[    8.297431] cjzang----------bus : platform   driver: 'msm_csid': driver_bound: bound to device 'ca30c00.qcom,csid'
+
+
+后续驱动框架会继续分析。一定要透彻。
+
+版权归cjzang和honeywell所有，未经书面授权。禁止在网络传播。

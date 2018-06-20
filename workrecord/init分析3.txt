@@ -1,0 +1,340 @@
+前文分析了acton环， service环的建立过程。这样acton有了先后执行的顺序，那action只管按照顺序执行command命令就好了。具体的命令函数指针在结构体数组里定义好了。
+
+那我们最后看看他是如何一条条的执行命令的，service进程如何起来的。service进程推出后，多路监听又是如何检测到做动作的。
+
+一切问题就在这段里。
+ while (true) {
+        if (!waiting_for_exec) {
+            execute_one_command();
+            restart_processes();
+        }
+
+        int timeout = -1;
+        if (process_needs_restart) {
+            timeout = (process_needs_restart - gettime()) * 1000;
+            if (timeout < 0)
+                timeout = 0;
+        }
+
+        if (!action_queue_empty() || cur_action) {
+            timeout = 0;
+        }
+
+        bootchart_sample(&timeout);
+
+        epoll_event ev;
+        int nr = TEMP_FAILURE_RETRY(epoll_wait(epoll_fd, &ev, 1, timeout));
+        if (nr == -1) {
+            ERROR("epoll_wait failed: %s\n", strerror(errno));
+        } else if (nr == 1) {
+            ((void (*)()) ev.data.ptr)();
+        }
+    }
+
+    return 0;
+  
+  execute_one_command();这句话开始从最头的action取command， 开始执行函数。
+  int result = cur_command->func(cur_command->nargs, cur_command->args);
+  
+  比如说start    KEYWORD(start,       COMMAND, 1, do_start)
+  开始进入 do_start函数， pid_t pid = fork();
+    if (pid == 0) {
+        struct socketinfo *si;
+        struct svcenvinfo *ei;
+        char tmp[32];
+        int fd, sz;
+        这里开始fork子进程。当然在这之前要先便利整个service，开进程是否已经起来。这里fork起来后，进入子进程。            arg_ptrs[arg_idx] = NULL;
+            execve(svc->args[0], (char**) arg_ptrs, (char**) ENV);
+            
+            然后开始加载代码段。这样进程就起来了。
+            
+同时我们注意 比如zygote进程
+service zygote /system/bin/app_process -Xzygote /system/bin --zygote --start-system-server
+    class main
+    socket zygote stream 660 root system
+    onrestart write /sys/android_power/request_state wake
+    onrestart write /sys/power/state on
+    onrestart restart media
+    onrestart restart netd
+    writepid /dev/cpuset/foreground/tasks
+    
+    class main 这个是什么意思呢？  大部分进程都有这个class信息，这代表该service属于哪一类。 所以看来有个地方是一次起来某一类的service.  那谁有这么大的能力一起起来某一类的进程呢？
+    
+        KEYWORD(class_start, COMMAND, 1, do_class_start)，看看这个关键字。这里就是一起启动某类所有service.
+    我们可以看到。在on boot阶段
+    class_start core 会启动所有core类的service.
+    
+    那问题来了，zygote属于main类，那zygote是如何起来的呢？    这个问题留到读者自己分析吧。 获取在我们分析到vold进程时候，我会统一解答。
+    
+    那倒着为止，所有的必要的native进程就起来了。 那进程起来如何启动错误，比如system_server没起来，init会怎么办呢？ 系统的property有时如何设置的呢？
+    
+    
+    下面我们分析这2个问题。
+    
+    当system_server挂了。那zygote进程退出了。zygote退出会， init会收到SIG_CHLD信号。收到信号会进入信号处理函数处理。static void SIGCHLD_handler(int) {
+    if (TEMP_FAILURE_RETRY(write(signal_write_fd, "1", 1)) == -1) {
+        ERROR("write(signal_write_fd) failed: %s\n", strerror(errno));
+    }
+}
+ 这里就是往socket写端写个字符，其实写什么无所谓。 写个空格都行。
+ 
+ 别忘了，此时套接字读端被监听呢？ epoll监听读端阻塞， 当收到内核的可读信号后，会开始处理，
+ 
+ static bool wait_for_one_process() {
+    int status;
+    pid_t pid = TEMP_FAILURE_RETRY(waitpid(-1, &status, WNOHANG));
+    if (pid == 0) {
+        return false;
+    } else if (pid == -1) {
+        ERROR("waitpid failed: %s\n", strerror(errno));
+        return false;
+    }
+
+    service* svc = service_find_by_pid(pid);
+
+    std::string name;
+    if (svc) {
+        name = android::base::StringPrintf("Service '%s' (pid %d)", svc->name, pid);
+    } else {
+        name = android::base::StringPrintf("Untracked pid %d", pid);
+    }
+
+    NOTICE("%s %s\n", name.c_str(), DescribeStatus(status).c_str());
+
+    if (!svc) {
+        return true;
+    }
+
+    // TODO: all the code from here down should be a member function on service.
+
+    if (!(svc->flags & SVC_ONESHOT) || (svc->flags & SVC_RESTART)) {
+        NOTICE("Service '%s' (pid %d) killing any children in process group\n", svc->name, pid);
+        kill(-pid, SIGKILL);
+    }
+
+    // Remove any sockets we may have created.
+    for (socketinfo* si = svc->sockets; si; si = si->next) {
+        char tmp[128];
+        snprintf(tmp, sizeof(tmp), ANDROID_SOCKET_DIR"/%s", si->name);
+        unlink(tmp);
+    }
+
+    if (svc->flags & SVC_EXEC) {
+        INFO("SVC_EXEC pid %d finished...\n", svc->pid);
+        waiting_for_exec = false;
+        list_remove(&svc->slist);
+        free(svc->name);
+        free(svc);
+        return true;
+    }
+
+    svc->pid = 0;
+    svc->flags &= (~SVC_RUNNING);
+
+    // Oneshot processes go into the disabled state on exit,
+    // except when manually restarted.
+    if ((svc->flags & SVC_ONESHOT) && !(svc->flags & SVC_RESTART)) {
+        svc->flags |= SVC_DISABLED;
+    }
+
+    // Disabled and reset processes do not get restarted automatically.
+    if (svc->flags & (SVC_DISABLED | SVC_RESET))  {
+        svc->NotifyStateChange("stopped");
+        return true;
+    }
+
+    time_t now = gettime();
+    if ((svc->flags & SVC_CRITICAL) && !(svc->flags & SVC_RESTART)) {
+        if (svc->time_crashed + CRITICAL_CRASH_WINDOW >= now) {
+            if (++svc->nr_crashed > CRITICAL_CRASH_THRESHOLD) {
+                ERROR("critical process '%s' exited %d times in %d minutes; "
+                      "rebooting into recovery mode\n", svc->name,
+                      CRITICAL_CRASH_THRESHOLD, CRITICAL_CRASH_WINDOW / 60);
+                android_reboot(ANDROID_RB_RESTART2, 0, "recovery");
+                return true;
+            }
+        } else {
+            svc->time_crashed = now;
+            svc->nr_crashed = 1;
+        }
+    }
+
+    svc->flags &= (~SVC_RESTART);
+    svc->flags |= SVC_RESTARTING;
+
+    // Execute all onrestart commands for this service.
+    struct listnode* node;
+    list_for_each(node, &svc->onrestart.commands) {
+        command* cmd = node_to_item(node, struct command, clist);
+        cmd->func(cmd->nargs, cmd->args);
+    }
+    svc->NotifyStateChange("restarting");
+    return true;
+}
+这里会通过waitpid获取到到底是哪个进程挂了。通过pid遍历这个service环。找到后，把service的结构体的状态重置。别忘了一个进程，后带动其他相关进程退出。比如syste_server进出了。androud所有进程都重启了
+
+最后设置service状态svc->NotifyStateChange("restarting");  然后就不管了。这个信号处理就结束了。 完了？ 真的完了吗？ 怎么没看到重启啊？还记得柱塞的多路监听了。刚才因为读端有数据返回了。导致了心动一个
+循环又开始了。又开始启动进程了。对了，就在这里又开始了新的进程重启。
+
+最后看看客户端写property的过程。
+void start_property_service() {
+    property_set_fd = create_socket(PROP_SERVICE_NAME, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                                    0666, 0, 0, NULL);
+    if (property_set_fd == -1) {
+        ERROR("start_property_service socket creation failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    listen(property_set_fd, 8);
+
+    register_epoll_handler(property_set_fd, handle_property_set_fd);
+}
+还记得启动property service时候注册的监听函数吗？
+
+static void handle_property_set_fd()
+{
+    prop_msg msg;
+    int s;
+    int r;
+    struct ucred cr;
+    struct sockaddr_un addr;
+    socklen_t addr_size = sizeof(addr);
+    socklen_t cr_size = sizeof(cr);
+    char * source_ctx = NULL;
+    struct pollfd ufds[1];
+    const int timeout_ms = 2 * 1000;  /* Default 2 sec timeout for caller to send property. */
+    int nr;
+
+    if ((s = accept(property_set_fd, (struct sockaddr *) &addr, &addr_size)) < 0) {
+        return;
+    }
+
+    /* Check socket options here */
+    if (getsockopt(s, SOL_SOCKET, SO_PEERCRED, &cr, &cr_size) < 0) {
+        close(s);
+        ERROR("Unable to receive socket options\n");
+        return;
+    }
+
+    ufds[0].fd = s;
+    ufds[0].events = POLLIN;
+    ufds[0].revents = 0;
+    nr = TEMP_FAILURE_RETRY(poll(ufds, 1, timeout_ms));
+    if (nr == 0) {
+        ERROR("sys_prop: timeout waiting for uid=%d to send property message.\n", cr.uid);
+        close(s);
+        return;
+    } else if (nr < 0) {
+        ERROR("sys_prop: error waiting for uid=%d to send property message: %s\n", cr.uid, strerror(errno));
+        close(s);
+        return;
+    }
+
+    r = TEMP_FAILURE_RETRY(recv(s, &msg, sizeof(msg), MSG_DONTWAIT));
+    if(r != sizeof(prop_msg)) {
+        ERROR("sys_prop: mis-match msg size received: %d expected: %zu: %s\n",
+              r, sizeof(prop_msg), strerror(errno));
+        close(s);
+        return;
+    }
+
+    switch(msg.cmd) {
+    case PROP_MSG_SETPROP:
+        msg.name[PROP_NAME_MAX-1] = 0;
+        msg.value[PROP_VALUE_MAX-1] = 0;
+
+        if (!is_legal_property_name(msg.name, strlen(msg.name))) {
+            ERROR("sys_prop: illegal property name. Got: \"%s\"\n", msg.name);
+            close(s);
+            return;
+        }
+
+        getpeercon(s, &source_ctx);
+
+        if(memcmp(msg.name,"ctl.",4) == 0) {
+            // Keep the old close-socket-early behavior when handling
+            // ctl.* properties.
+            close(s);
+            if (check_control_mac_perms(msg.value, source_ctx)) {
+                handle_control_message((char*) msg.name + 4, (char*) msg.value);
+            } else {
+                ERROR("sys_prop: Unable to %s service ctl [%s] uid:%d gid:%d pid:%d\n",
+                        msg.name + 4, msg.value, cr.uid, cr.gid, cr.pid);
+            }
+        } else {
+            if (check_perms(msg.name, source_ctx)) {
+                property_set((char*) msg.name, (char*) msg.value);
+            } else {
+                ERROR("sys_prop: permission denied uid:%d  name:%s\n",
+                      cr.uid, msg.name);
+            }
+
+            // Note: bionic's property client code assumes that the
+            // property server will not close the socket until *AFTER*
+            // the property is written to memory.
+            close(s);
+        }
+        freecon(source_ctx);
+        break;
+
+    default:
+        close(s);
+        break;
+    }
+}
+这里就是完整的property server端的操作。 这里就可以看到为什么key 必须少于31字符，value 少于91字符。
+
+
+    prop_info* pi = (prop_info*) __system_property_find(name);
+
+    if(pi != 0) {
+        /* ro.* properties may NEVER be modified once set */
+        if((prefixlen < 0) && !strncmp(name, "ro.", 3)) return -1;
+        
+        这里也可以清晰的看到为什么ro只能初始化，不能修改了。
+        
+        else if (persistent_properties_loaded &&
+            strncmp("persist.", name, strlen("persist.")) == 0) {
+        /*
+         * Don't write properties to disk until after we have read all default properties
+         * to prevent them from being overwritten by default values.
+         */
+        write_persistent_property(name, value);
+    }
+    
+    通过这句，我们可以清晰的看到。persist的property的特殊，
+    static void write_persistent_property(const char *name, const char *value)
+{
+    char tempPath[PATH_MAX];
+    char path[PATH_MAX];
+    int fd;
+
+    snprintf(tempPath, sizeof(tempPath), "%s/.temp.XXXXXX", PERSISTENT_PROPERTY_DIR);
+    fd = mkstemp(tempPath);
+    if (fd < 0) {
+        ERROR("Unable to write persistent property to temp file %s: %s\n", tempPath, strerror(errno));
+        return;
+    }
+    write(fd, value, strlen(value));
+    fsync(fd);
+    close(fd);
+
+    snprintf(path, sizeof(path), "%s/%s", PERSISTENT_PROPERTY_DIR, name);
+    if (rename(tempPath, path)) {
+        unlink(tempPath);
+        ERROR("Unable to rename persistent property file %s to %s\n", tempPath, path);
+    }
+}
+
+这里明确的可以看到吧persist写到了/data/property目录下了。 key是property文件名。 value是文件内容。
+
+到这里，整个init就算分析完了。还有很多细节没提到。 比如有时候，极端情况。特别第一次bring up时候，会进入了recovery模式，可以看到进程比如vold会多次启动，进入了recovery模式。
+
+这需要读者自己再细心体验了。
+
+
+
+
+所有版权有cjzang及honeywell公司所有。 没有书面授权，禁止转载。
+
+如果你喜欢作者的文章，请关注http://www.cnblogs.com/nan-jing/   下一篇 会分析mediaserver进程。敬请关注

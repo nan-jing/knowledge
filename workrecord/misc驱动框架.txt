@@ -1,0 +1,200 @@
+misc 入门体验。
+
+misc框架相对比较简单。是入门linux驱动框架比较好的例子。麻雀虽少，五脏俱全。通过这个框架，我们可以窥视驱动框架。驱动框架一直宣称。通过C语言实现了C++面向对象的思想。我们可以看看和C++一样吗？
+通过这个，也可以更深刻的理解面向对象。理解属性和方法的恩很情仇。
+
+先不用看代码，先说下整体结构。
+
+misc模块是系统提供的。已经写好的。驱动要做的是和misc模块交互。两个模块如何交互呢？直接函数调用？现有模块如何知道未定义的模块呢？奥，对，用接口，接口实现了声明和实现的分离。c++ java都有现成的
+声明。那C语言咋整。嗯。对了。函数指针结构体啊。这就是接口。
+
+嗯，所以misc模块在中心。 四周围绕着驱动模块。驱动模块把函数指针结构体注册到misc里。misc负责和kernel交互。然后再通知驱动模块。这不是典型的网络星型拓扑结构吗？
+
+那驱动模块如何把指针结构体注册到misc模块呢？
+
+int misc_register(struct miscdevice * misc)
+
+struct miscdevice  {
+	int minor;
+	const char *name;
+	const struct file_operations *fops;
+	struct list_head list;
+	struct device *parent;
+	struct device *this_device;
+	const struct attribute_group **groups;
+	const char *nodename;
+	umode_t mode;
+};
+这明白了。驱动模块分配miscdevice或者父类内存。然后注册进去。那也没看到函数指针啊？ 是的，没有。但是我们看到了const struct file_operations *fops; 这玩儿不是就是函数指针结构吗？
+
+所以驱动模块只要把信息填充到这个结构体里。注册进去就好了。当上层应用open read 的时候，进入了misc模块。misc模块会通过fops通知到驱动模块。这个路子就比较通了。所以说白了还是实现file_operation.
+
+那这和普通字符设备驱动有什么区别呢？写法套路有变化吗？ 确实没有。万变不离其宗。misc设备本来就是主设备号为10的字符设备。misc模块根据次设备号来发数据发送到对应的外围模块。
+
+那下面我们重点关注下misc模块的实现机制。外围模块简单提一下。
+
+打开misc.c我们马上开始找入口。我插，没有module_init， 瞬间懵比。再一看有它 subsys_initcall(misc_init); 奥，这个和module_init一个原理。都是宏实现了函数编译放置到.init字段里。系统起来有初始化
+顺序。相当于有7个栈。每个栈里放了一些函数指针。系统启动初始化的时候，会冲0--7延着栈调用。
+#define subsys_initcall(fn)		__define_initcall(fn, 4)
+奥，看来放到了第4个栈里了。
+
+既然放进去了。初始化时候就会开始初始化。
+static int __init misc_init(void)
+{
+	int err;
+	struct proc_dir_entry *ret;
+
+	ret = proc_create("misc", 0, NULL, &misc_proc_fops);
+	misc_class = class_create(THIS_MODULE, "misc");
+	err = PTR_ERR(misc_class);
+	if (IS_ERR(misc_class))
+		goto fail_remove;
+
+	err = -EIO;
+	if (register_chrdev(MISC_MAJOR,"misc",&misc_fops))
+		goto fail_printk;
+	misc_class->devnode = misc_devnode;
+	return 0;
+    
+    这个还是挺重要的。一句一句来看吧。proc_create，这个函数是干什么呢？ 是用来在/proc目录创建内存文件系统的。这句话会再/proc目录下创建misc文件。文件的读写操作在misc_proc_fops实现。
+    可以cat /proc/misc 这里面放的次设备号和名字
+    CT60-L0N-ASC:/proc $ cat misc
+ 30 android_rndis_qc
+ 31 usb_accessory
+ 32 mtp_usb
+ 33 pta
+ 34 ramdump_adsp_rh
+ 35 ramdump_smem
+ 36 memory_bandwidth
+ 37 network_throughput
+ 38 network_latency
+ 39 cpu_dma_latency
+ 40 ramdump_modem
+ 41 ramdump_cdsp
+ 42 ramdump_adsp
+ 43 xt_qtaguid
+ 44 msm_rtac
+ 45 binder
+ 46 coresight-stm
+ 47 coresight-tmc-etf
+ 48 coresight-tmc-etr
+ 49 ashmem
+239 uhid
+236 device-mapper
+ 50 bq27742_ioctl
+ 51 Honeywell_keyremap
+223 uinput
+
+可以看到我们的keyremap设备也是杂项设备。次设备号是51. 这个驱动我们后续再看。
+
+继续往下看
+misc_class = class_create(THIS_MODULE, "misc");这句是创建了class类。这个东西涉及到了驱动框架。各个class通过kset组成了双向循环链表。各个device属于哪个class呢？ 
+struct subsys_private {
+	struct kset subsys;
+	struct kset *devices_kset;
+	struct list_head interfaces;
+	struct mutex mutex;
+
+	struct kset *drivers_kset;
+	struct klist klist_devices;
+	struct klist klist_drivers;
+	struct blocking_notifier_head bus_notifier;
+	unsigned int drivers_autoprobe:1;
+	struct bus_type *bus;
+
+	struct kset glue_dirs;
+	struct class *class;
+};
+ class就是通过klist_devices把个device关联了起来。所以在sys目录下才有些软连接，连接到了device设备。
+ CT60-L0N-ASC:/sys/class/misc # ls -al
+total 0
+drwxr-xr-x  2 root root 0 1970-01-16 06:30 .
+drwxr-xr-x 76 root root 0 1970-01-16 06:30 ..
+lrwxrwxrwx  1 root root 0 1970-01-16 06:59 Honeywell_keyremap -> ../../devices/virtual/misc/Honeywell_keyremap
+
+那光有了class.就能建立软连接。当然不是，要建立这个软连接。需要在int misc_register(struct miscdevice * misc)中创建虚拟device.
+misc->this_device =
+		device_create_with_groups(misc_class, misc->parent, dev,
+					  misc, misc->groups, "%s", misc->name);
+这个还有个最重要的功能，上应用层发送uevent时间。uevent事件？ 好诡异，干什么的。为什么？ 你知道系统是如何创设备节点的吗？
+CT60-L0N-ASC:/dev # ls -al | grep 10
+crw-------  1 system    system        10,  51 1970-01-16 06:30 Honeywell_keyremap
+这个设备节点是如何创建的呢？ 这个是应用层创建的。如何创建的。这个说来话长。这个是uevent进程创建的。uevent进程是init进程fork的，code就是用的init进程。好复杂，是不是？ 第一次我也懵比。
+同一套code.不同的进程。还是父子关系。 这个扯远了。有机会和大家分享uevent进程运行机制。
+
+我们继续misc_init
+	if (register_chrdev(MISC_MAJOR,"misc",&misc_fops))
+    最后来看这句。这句是把字符设备注册到了kernel里了。很多老鸟都想。cdev_add哪去了？ 不是该用这个接口吗？
+    其实这个接口里面包含了cdev_add
+    
+    int __register_chrdev(unsigned int major, unsigned int baseminor,
+		      unsigned int count, const char *name,
+		      const struct file_operations *fops)
+{
+	struct char_device_struct *cd;
+	struct cdev *cdev;
+	int err = -ENOMEM;
+
+	cd = __register_chrdev_region(major, baseminor, count, name);
+	if (IS_ERR(cd))
+		return PTR_ERR(cd);
+
+	cdev = cdev_alloc();
+	if (!cdev)
+		goto out2;
+
+	cdev->owner = fops->owner;
+	cdev->ops = fops;
+	kobject_set_name(&cdev->kobj, "%s", name);
+
+	err = cdev_add(cdev, MKDEV(cd->major, baseminor), count);
+    }
+    
+    
+    好了，从这以后，设备节点有了。设备号也注册了。那么上层应用操作时候，就进入了设备号10的驱动misc里了。
+    
+    那我们再分析下，外围设备驱动是如何注册到misc框架里的了， 是用int misc_register(struct miscdevice * misc)， 如何注册的呢？
+    就是根据当前的状态，如果动态的。misc给他分配个次设备，
+
+    int i = find_first_zero_bit(misc_minors, DYNAMIC_MINORS);
+		if (i >= DYNAMIC_MINORS) {
+			err = -EBUSY;
+			goto out;
+		}
+		misc->minor = DYNAMIC_MINORS - i - 1;
+		set_bit(i, misc_minors);
+        
+        最后，把这个misdevice函数指针保存起来。保存不是在列表或者数组里。而是环形链表。这个是linux最经常用的数据结构。还记得大名鼎鼎的container_of吗？
+        
+    好最后通过	list_add(&misc->list, &misc_list);把misc模块和外围驱动模块联系起来了。环境就完全准备好了。此时上层应用可以做操作了
+    
+    这个时候，hal层开始open了。做了什么呢？misc只是个管家，他会吧请求都交给外围驱动模块，如何交给I他们呢？
+    
+    list_for_each_entry(c, &misc_list, list) {
+			if (c->minor == minor) {
+				new_fops = fops_get(c->fops);
+				break;
+			}
+		}
+		if (!new_fops)
+			goto fail;
+	}
+
+	/*
+	 * Place the miscdevice in the file's
+	 * private_data so it can be used by the
+	 * file operations, including f_op->open below
+	 */
+	file->private_data = c;
+
+	err = 0;
+	replace_fops(file, new_fops);
+	if (file->f_op->open)
+		err = file->f_op->open(inode,file);
+        
+    这就很明确了。根据设备节点信息的次设备号。遍历外围设备环。导致这个外围设备驱动模块。然后调用它的open方法。这个注意个细节。它把file的file_operation直接赋值了外围模块的。这样以后read write都是直接进
+    外围模块了。
+    
+    这样misc核心模块就分析完了。它只负责保存外围模块信息。并把设备号注册到了kernel里。有请求时候，把请求根据次设备号分配格各个外围模块。这个设计逻辑清晰，构思巧妙。太他妈的好了。
+    
+    要深度理解c语言。要深刻理解模块化编程思想。还要扪心自问。我懂编程吗？  说白了。就是pc在上串下跳。

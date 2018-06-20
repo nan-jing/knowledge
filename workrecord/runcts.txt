@@ -1,0 +1,11 @@
+@echo off
+set CTS_ROOT=C:\H182361\work\cts\android-cts-6.0_r7-linux_x86-arm
+set CTS_LIB=%CTS_ROOT%\android-cts\tools\cts-tradefed.jar
+set DDM_LIB=%CTS_ROOT%\android-cts\tools\ddmlib-prebuilt.jar
+set TDF_LIB=%CTS_ROOT%\android-cts\tools\tradefed-prebuilt.jar
+set HST_LIB=%CTS_ROOT%\android-cts\tools\hosttestlib.jar
+set JARS=%CTS_LIB%;%DDM_LIB%;%TDF_LIB%;%HST_LIB%
+rem echo java -cp %JARS% -DCTS_ROOT=%CTS_ROOT% com.android.cts.tradefed.command.CtsConsole
+call java -cp %JARS% -DCTS_ROOT=%CTS_ROOT% com.android.cts.tradefed.command.CtsConsole
+rem pause
+@echo on

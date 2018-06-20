@@ -1,0 +1,637 @@
+
+1  buildserver: 172.31.48.8
+chunjiezang    HON123well
+
+
+3 dowladota
+adb reboot recovery
+adb sideload ****.zip
+
+
+7 共享网盘目录
+\\CH3UW1050\Engineer\Mobility\Users
+
+
+8 c/c++ 加Log
+#undef NDEBUG
+#define LOG_NIDEBUG 0
+#define LOG_NDEBUG 0
+#define LOG_NDDEBUG 0
+
+9 EPM
+\\ch3uw1050\Engineer\Mobility\Software\Embedded Software\Android\EPM
+
+10 64位linux无法运行32位应用
+sudo dpkg --add-architecture i386
+sudo apt-get update
+sudo apt-get install libc6:i386 libncurses5:i386 libstdc++6:i386
+
+11 build gms otapackage 
+export BUILD_WITH_GMS=yes
+
+12 hudson  build additional command, download patch
+repo download -c device/honeywell/common 9046/1
+
+13 additon cmd gerrit
+repo download -c device/honeywell/common 9040/6
+
+14 android studio快捷键
+ctrl+alt+shift+n 跳转到某个函数
+ctrl + n跳转到某个类
+ctrl + alt + L 格式化代码
+ctrl + o 加载override函数
+
+
+D75E
+    KK_MASTER:
+        repo init -u ssh://<EID>@review.android.honeywell.com:29418/platform/manifest.git -b master -m hsm8x74-int-gms.xml --repo-url=ssh://<EID>@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+    KK_RELEASE:
+        repo init -u ssh://h179373@review.android.honeywell.com:29418/platform/manifest.git -b master -m paris-release-54-01-00-int-gms.xml --repo-url=ssh://h179373@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+    M_MASTER:
+        repo init -u ssh://<EID>@review.android.honeywell.com:29418/platform/manifest.git -b master -m hsm8x74-marshmallow-master-int-gms.xml --repo-url=ssh://<EID>@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+    M_RELEASE:
+        repo init -u ssh://<EID>@review.android.honeywell.com:29418/platform/manifest.git -b master -m hsm8x74-marshmallow-cherryh-release-01-int-gms --repo-url=ssh://<EID>@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+ 
+CT50
+    KK_MASTER:
+        repo init -u ssh://h179373@review.android.honeywell.com:29418/platform/manifest.git -b master -m hsm8x74-int-gms.xml --repo-url=ssh://h179373@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+    KK_RELEASE:
+        repo init -u ssh://h179373@review.android.honeywell.com:29418/platform/manifest.git -b master -m hsm8x74-helsinki-release1-int.xml --repo-url=ssh://h179373@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+    M_MASTER:
+        repo init -u ssh://h179373@review.android.honeywell.com:29418/platform/manifest.git -b master -m hsm8x74-marshmallow-master-int-gms.xml --repo-url=ssh://h179373@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+    M_RELEASE:
+        repo init -u ssh://h179373@review.android.honeywell.com:29418/platform/manifest.git -b master -m hsm8x74-marshmallow-cherryh-release-01-int-gms.xml --repo-url=ssh://h179373@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+        
+CN51(melbourne)
+    JB
+    repo init -u ssh://h179373@review.android.honeywell.com:29425/common/omapmanifest.git -b catalina-1.3 --repo-url=ssh://h179373@review.android.honeywell.com:29425/tools/repo.git --repo-branch=catalina-1.3 --no-repo-verify
+    KK_MASTER:
+    KK_RELEASE:
+    M_MASTER:
+        repo init -u ssh://<EID>@review.android.honeywell.com:29425/common/omapmanifest.git -b melbourne-master --repo-url=ssh://<EID>@review.android.honeywell.com:29425/tools/repo.git --repo-branch=melbourne-master --no-repo-verify
+        M_RELEASE:
+        
+    cd /device/intermec/catalina
+    ./build.sh userdebug 12
+    M_RELEASE:
+        repo init -u ssh://<EID>@review.android.honeywell.com:29425/common/omapmanifest.git -b melbourne/marshmallow/release-01 -m melbourne-int-gms.xml --reference=/home/platform/repo-mirror/omap4-mirror --repo-url=ssh://<EID>@review.android.honeywell.com:29425/tools/repo.git --no-repo-verify
+    
+phoniex
+    KK_MASTER:
+    KK_RELEASE:
+    M_MASTER:
+        repo init -u ssh://H179373@review.android.honeywell.com:29425/common/omapmanifest.git -b master -m omap4-marshmallow-master-int-gms.xml --repo-url=ssh://H179373@review.android.honeywell.com:29425/tools/repo.git --no-repo-verify --reference=/home/platform/repo-mirror/omap4-mirror
+    M_RELEASE:
+        repo init -u ssh://h179373@review.android.honeywell.com:29425/common/omapmanifest.git -b hsm-omap4-release-01 -m omap4-marshmallow-release-01-int-gms.xml --repo-url=ssh://h179373@review.android.honeywell.com:29425/tools/repo.git --no-repo-verify --reference=/home/platform/repo-mirror/omap4-mirror
+    
+Hudson: 
+    
+CT50 D75E M KK Temp Jenkins: http://jenkins.android.honeywell.com:9000/view/CherryH/job/HSM8X74_Android_Platform_Image_Development_Pilot_Build/ 
+melbourne master M temp http://jenkins.android.honeywell.com:9000/view/Melbourne/job/MELBOURNE_Android_6.0_Platform_Image_Pilot_Build/ 
+melbourne release M job : http://jenkins.android.honeywell.com:9000/view/Melbourne/job/MELBOURNE_Android_6.0_Platform_GMS_NonGMS_Image_Release_Build/
+melbourne new job
+https://jenkins.android.honeywell.com:9000/view/Melbourne-M/
+
+MDM release job http://jenkins.android.honeywell.com:9000/view/HAX/job/HON_EnterpriseToolkit_Release/
+
+HAX download
+repo init -u ssh://h238514@review.android.honeywell.com:29426/HAX/manifest.git -m default-int.xml --repo-url=ssh://h238514@review.android.honeywell.com:29426/tools/repo.git --reference=/home/platform/repo-mirror/android-common-mirror/  
+
+OMAP M:
+Melbourne Jenkins:  http://jenkins.android.honeywell.com:9000/view/Melbourne/
+
+Master Jenkins: http://jenkins.android.honeywell.com:9000/view/Phoenix/job/OMAP4_Android_6.0_Platform_Image_Nightly_Build/
+Melbourne Master
+repo init -u ssh://<EID>@review.android.honeywell.com:29425/common/omapmanifest.git -b master -m omap4-marshmallow-master-int-gms.xml --repo-url=ssh://<EID>@review.android.honeywell.com:29425/tools/repo.git --no-repo-verify --reference=/home/platform/repo-mirror/omap4-mirror
+omap4-marshmallow-master-int.xml
+
+Release Jenkins: http://jenkins.android.honeywell.com:9000/view/Melbourne/job/MELBOURNE_Android_6.0_Platform_Image_Release_Build/
+Melbourne Release
+repo init -u ssh://<EID>@review.android.honeywell.com:29425/common/omapmanifest.git -b melbourne/marshmallow/release-01 -m melbourne-int.xml --repo-url=ssh://<EID>@review.android.honeywell.com:29425/tools/repo.git --no-repo-verify --reference=/home/platform/repo-mirror/omap4-mirror 
+
+QCOM Android KK:
+D75E master Jenkins: http://jenkins.android.honeywell.com:9000/view/PARIS/job/PARIS_Android_4.4_Platform_Image_Nightly_No_Artifacts/
+CT50 master Jenkins: http://jenkins-sz.honeywell.com:8080/job/HELSINKI_Android_4.4_Platform_Image_Nightly_No_Artifacts/
+KK 4.4 master
+repo init -u ssh://<EID>@review.android.honeywell.com:29418/platform/manifest.git -m hsm8x74-int-gms.xml --repo-url=ssh://<EID>@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+hsm8x74.xml
+
+D75E SP Jenkins: http://jenkins.android.honeywell.com:9000/view/PARIS/job/PARIS_Android_4.4_Build_Service_Package_New
+D75E Release Jenkins: http://jenkins.android.honeywell.com:9000/view/PARIS/job/PARIS_Android_4.4_Platform_Image_Release_Both_GMS_NONGMS/
+CT50 SP Jenkins: http://jenkins-sz.honeywell.com:8080/job/Helsinki_Make_Service_Pack_New/
+CT50 Release Jenkins: http://jenkins-sz.honeywell.com:8080/job/HELSINKI_Android_4.4_Platform_Image_Nightly_No_Artifacts/
+KK 4.4 release
+repo init -u ssh://<EID>@review.android.honeywell.com:29418/platform/manifest.git -m paris-release-54-01-00-int-gms.xml --repo-url=ssh://<EID>@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+hsm8x74-helsinki-release1-int.xml
+
+
+QCOM Android M:
+Jenkins: http://jenkins.android.honeywell.com:9000/view/CherryH/
+
+SP Jenkins: http://jenkins.android.honeywell.com:9000/view/CherryH/job/HSM8X74_Android_6.0_Platform_Image_Service_Package/
+
+Master Jenkins: http://jenkins.android.honeywell.com:9000/view/CherryH/job/CherryH_Android_6.0_Platform_Image_Nightly/
+Android M master
+repo init -u ssh://<EID>@review.android.honeywell.com:29418/platform/manifest.git -m hsm8x74-marshmallow-master-int-gms.xml --repo-url=ssh://<EID>@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+hsm8x74-marshmallow-master-int-gms.xml 
+hsm8x74-marshmallow-master-int.xml
+
+Release Jenkins: http://jenkins.android.honeywell.com:9000/view/CherryH/job/CherryH_Android_6.0_Platform_Image_Release/
+Android M release
+repo init -u ssh://<EID>@review.android.honeywell.com:29418/platform/manifest.git -m hsm8x74-marshmallow-cherryh-release-01-int-gms.xml --repo-url=ssh://<EID>@review.android.honeywell.com:29418/tools/repo.git --repo-branch=caf-stable --reference /home/platform/repo-mirror/hsm8x74-mirror
+
+ct60 pilot build
+https://jenkins.android.honeywell.com:9000/view/SDM660-N/job/HON660_Android_7.0_Platform_Image_Pilot_Build/
+
+book room
+
+Meeting Room
+Ext.	Meeting Room	Email Add.
+495	CR-CH3U TE Meeting Room B1F2	CRCH3UTEMeetingRoomB1F2@Honeywell.com
+
+250	CR-CH3U Orbit B2F2	Orbit@Honeywell.com
+
+246	CR-CH3U Stratos B2F2	Stratos@Honeywell.com
+
+255	CR-CH3U Voyager B2F2	CRCH3UVoyager@Honeywell.com
+
+/	CR-CH3U HAN B3F3	CR-CH3U-HAN-B3F3@Honeywell.com
+
+801	CR-CH3U MING B3F3	CR-CH3U-MING-B3F3@Honeywell.com
+
+/	CR-CH3U SONG B3F3	CR-CH3U-SONG-B3F3@Honeywell.com
+
+548	CR-CH3U TANG B3F3	CR-CH3U-TANG-B3F3@Honeywell.com
+
+874	CR-CH3U YUAN B3F3	CR-CH3U-YUAN-B3F3@Honeywell.com
+
+100	CR-CH3U Genesis B3F4	Genesis@Honeywell.com
+
+139	CR-CH3U Marksman B3F4	CRCH3UMarksman@Honeywell.com
+
+344	CR-CH3U Microquest B3F4	CRCH3UMicroquestB3F4@Honeywell.com
+
+102	CR-CH3U Quantum B3F4	Quantum@Honeywell.com
+
+223	CR-CH3U Solaris B3F4	Solaris@Honeywell.com
+
+103	CR-CH3U Strato-s2 B3F4	Strato-s2@Honeywell.com
+
+133	CR-CH3U Eclips B3F5	Eclips@Honeywell.com
+
+141	CR-CH3U Focus B3F5	Focus@Honeywell.com
+
+140	CR-CH3U Tomra B3F5	Tomra@Honeywell.com
+
+138	CR-CH3U Xenon B3F5	vuclips@Honeywell.com
+
+111	Security Guard Station( Entrance )	　
+110	110 Security Help Desk	　
+120	Clinic	
+
+
+密码：
+
+gerrit : marvell@99
+salesforce : marvell@88
+hsmftp: marvell@88    可能是电脑开机密码
+qcom createpooint: Marvell@99
+cnblog : nan-jing marvell@99
+stash : H179373 marvell@88  可能是登录密码
+hudson : H179373 marvell@99  可能是登录密码
+lava : H179373:HON123well
+acsjira: H179373:电脑开机密码
+wiki :H179373:电脑开机密码
+
+cts/gts server
+ip: 172.31.48.44   build/HON123well   
+ip: 172.31.48.45   build/HON123well
+
+gts 跑单条case
+run gts -m GtsPackageInstallerTapjackingTestCases -t com.google.android.packageinstaller.tapjacking.gts.TapjackingTest#testTapsDroppedWhenObscured 
+
+dynamic dangerout permissions
+
+
+Permission Group	Permissions
+CALENDAR	
+READ_CALENDAR
+WRITE_CALENDAR
+CAMERA	
+CAMERA
+CONTACTS	
+READ_CONTACTS
+WRITE_CONTACTS
+GET_ACCOUNTS
+LOCATION	
+ACCESS_FINE_LOCATION
+ACCESS_COARSE_LOCATION
+MICROPHONE	
+RECORD_AUDIO
+PHONE	
+READ_PHONE_STATE
+CALL_PHONE
+READ_CALL_LOG
+WRITE_CALL_LOG
+ADD_VOICEMAIL
+USE_SIP
+PROCESS_OUTGOING_CALLS
+SENSORS	
+BODY_SENSORS
+SMS	
+SEND_SMS
+RECEIVE_SMS
+READ_SMS
+RECEIVE_WAP_PUSH
+RECEIVE_MMS
+STORAGE	
+READ_EXTERNAL_STORAGE
+WRITE_EXTERNAL_STORAGE
+
+https://developer.android.com/guide/topics/permissions/requesting.html#normal-dangerous
+
+\\CH3UW1061\Transfer
+
+马达驱动节点
+/sys/devices/virtual/timed_output/vibrator/enable
+
+java输出call stack
+Log.d(tag, Log.getStackTraceString(new Throwable()))
+
+led控制
+echo 255 > /sys/class/leds/scanner-green/brightness
+
+ubuntu为普通用户添加权限
+sudo usermod -a -G adm wyx
+sudo usermod -a -G sudo wyx
+
+:1,10 s/^/#/g  1-10 头添加#
+
+code 添加ctags gtags
+关于global的使用，global需要根据gtags.files里面的文件来生成数据库，所以在生成数据库之前，先find需要的文件到gtags.files中。即
+find . \( -path "out" -o -path "./.repo" -o -path "./.git" \) -prune \
+    -o -name "*.s" -o -name ".S" -o -name "*.c" \
+    -o -name "*.h" -o -name "*.cpp" -o -name "*.cxx" \
+    -o -name "*.cc" -o -name "*.java" -o -name "Makefile" \
+    -o -name "*.mk" -o -name "*target_files" -o -name "*.py" \
+    > gtags.files
+这里是我自己的gtags.files文件，其中忽略了out, .repo和.git。
+然后运行
+gtags
+这样就会生成GTAGS、GRTAGS、GPATH三个文件
+进入vim以后，使用
+:set cscopeprg=gtags-cscope
+:cs add GTAGS
+这样就可以将gtags生成的数据库添加。
+如果对文件进行了修改，只需运行
+global -u
+这样就可以增量更新了。
+增量更新单个文件的速度极快，几乎是瞬间完成。有了这个优势，我们就可以增加一个autocmd，每次:w的时候自动更新索引文件。
+
+melbourne release job
+http://jenkins.android.honeywell.com:9000/view/Melbourne/job/MELBOURNE_Android_6.0_Platform_GMS_NonGMS_Image_Release_Build/
+
+
+cn51 lava job
+http://ch3uadlavamaster001.honeywell.com/scheduler/device/CN51-295X1500345
+
+产生当前manifest文件环境
+"repo manifest -o -r > xxx"
+
+
+如何打印出堆栈信息
+在kernel里。直接调用dump_stack();
+在c++里
+
+#include <utils/CallStack.h>
+...
+void foo(void) {
+...
+    android::CallStack stack;
+    stack.update( );
+    stack.log("XXX");
+
+...
+}
+
+LOCAL_SHARED_LIBRARIES += libutils
+
+在c里
+dump_stack.h
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+  void dump_stack_android(void);
+  
+#ifdef __cplusplus
+}
+#endif
+
+
+#include "dump_stack.h"
+#include <utils/CallStack.h>
+
+using namespace android;
+extern "C"{
+  void dump_stack_android(void)
+  {
+     CallStack stack;
+     stack.update();
+     stack.log("XXX");
+  }
+}
+
+LOCAL_SRC_FILES := \
+         …... \
+         dump_stack.cpp
+
+LOCAL_SHARED_LIBRARIES += libutils
+
+接下來在C file中要使用時只要
+
+
+extern void dump_stack_android();
+
+
+void function_a()
+{
+  …
+  dump_stack_android();
+  …
+}
+
+
+在build的时候优化apk
+WITH_DEXPREOPT 
+
+#saken ftp
+#ftp://ftp1.sasken.com/From_Honeywell
+
+URL:  https://filetransfer.honeywell.com
+User Name : ewr-https
+Password :  88k33V64
+
+Folder: Distribution/ACS/HSM/EWR File Transfer/Test OS/
+Folder Quota: 2000MB
+
+
+human 认证联系人
+Manogaran, Murali <Murali.Manogaran@harman.com>; Mukunda, Srividya <Srividya.Mukunda@harman.com>; Gupta, Ashish <Ashishkumar.Gupta@harman.com>; Chand, Gian <Gian.Chand@harman.com> 
+Gupta, Ashish <Ashishkumar.Gupta@harman.com> Hiremath, Preeti <Preeti.Hiremath@harman.com>
+
+跑cts时候，跳过media下载
+--skip-preconditions
+
+MDM EnterpriseToolkit
+    Some usefull bookmarks about EnterpriseToolkit
+1.	Gerrit
+http://review.android.honeywell.com:8088/
+2.	Jenkins
+            http://jenkins.android.honeywell.com:9000/job/HON_EnterpriseToolkit_Nightly/
+3.	Code Management
+git clone ssh://h116877@review.android.honeywell.com:29426/EnterpriseToolkit
+
+beyond compare3 license
+
+Licensed to:    Metro (Suzhou) Technologies Co., Ltd
+Quantity:       2 users 
+Serial number:  9408-9305
+License type:   Pro Edition for Windows
+--- BEGIN LICENSE KEY ---
+IEMaDdSvyqbLgmXaENOZNA3g62KZrmwprV8FE99dzbIhwg4v1H5L58-cH
+3AIfD2YG6slIeueSIq-UbpW4ImKYZK+Cs44KpbjcrYac1hn-fsR3wh9ss
+zRjCHSbr7JQpw+JRM4W7GuI8HtnlWUaL90wFR0GcHtBbXMo6LqJdd6dIE
+--- END LICENSE KEY ----- 
+
+git push error unpack error
+git push hsma --no-thin 
+
+在安卓资源字符串中显示&
+&amp;
+
+android  新增jar包注意。
+在新增启动jar包时候，需要修改PRODUCT_BOOT_JARS外还要修改
+		core/tasks/check_boot_jars/package_whitelist.txt
+        不然编译不过。
+
+ 美国release服务器
+ \\de08st2702\hsm\ENG-MOB-SWImages
+ 
+ android 资源覆盖方法
+ DEVICE_PACKAGE_OVERLAYS := device/honeywell/common-8x74/overlay
+ 
+ 编译各个模块
+ make aboot
+ make bootimage
+ make systeimage
+ 
+ 
+ jira 查询
+ project = 3PMDM AND assignee = H179373
+ 
+ 
+ reboot reason ct50
+ #ifdef CONFIG_MACH_HSM8X74
+	if (in_panic) {
+		/* set panic failure restart flag */
+		__raw_writel(0x77665508, restart_reason);
+	} else
+#endif
+	if (cmd != NULL) {
+		if (!strncmp(cmd, "bootloader", 10)) {
+			__raw_writel(0x77665500, restart_reason);
+		} else if (!strncmp(cmd, "recovery", 8)) {
+			__raw_writel(0x77665502, restart_reason);
+		} else if (!strcmp(cmd, "rtc")) {
+			__raw_writel(0x77665503, restart_reason);
+		} else if (!strncmp(cmd, "oem-", 4)) {
+			unsigned long code;
+			code = simple_strtoul(cmd + 4, NULL, 16) & 0xff;
+			__raw_writel(0x6f656d00 | code, restart_reason);
+		} else if (!strncmp(cmd, "edl", 3)) {
+			enable_emergency_dload_mode();
+		} else {
+			__raw_writel(0x77665501, restart_reason);
+		}
+	}
+    
+    
+ sasken security gms 记录
+ \\ch3uw1050\Engineer\EWR\EWR-SW\Android\ Release\Google
+ 
+ 读写字符串到文件/system/core/base/file.cpp
+ WriteStringToFd
+ ReadFileToString
+ 
+ user 版本获得root 权限
+ 在adb_main.cpp文件中。
+ 
+ static bool should_drop_privileges() 直接返回false;同时注释掉selinux检查
+  else {
+        /**
+        if ((root_seclabel != NULL) && (is_selinux_enabled() > 0)) {
+            // b/12587913: fix setcon to allow const pointers
+            if (setcon((char *)root_seclabel) < 0) {
+                exit(1);
+            }
+        }
+        */
+        std::string local_name = android::base::StringPrintf("tcp:%d", server_port);
+        
+        
+ota package签名
+openssl pkcs8 -in ~/project/sign/cn75/Release/releasekey.pk8 -inform DER -nocrypt
+java -Xmx2048m -jar ~/project/sign/cn75/signapk.jar -w ~/project/sign/cn75/Release/releasekey.x509.pem ~/project/sign/cn75/Release/releasekey.pk8 $1 $2
+   
+
+dubai 编译
+source /usr/local/android/jdk-1.8
+source build/envsetup.sh
+choosecombo release hon660 userdebug[user]
+make -j12
+
+烧录
+Enter fastboot
+Adb reboot bootloader
+
+How to Flash Android with fastboot
+fastboot flash boot boot.img
+fastboot flash system system.img
+fastboot flash mdtp mdtp.img
+fastboot flash abl abl.elf
+#fastboot flash cache cache.img
+fastboot flash persist persist.img
+#fastboot flash userdata userdata.img
+
+hon666编译bootloader edk2
+
+make -j12 aboot  //这样就生成了abl.img这个就是bootloader
+烧录abl.img
+adb reboot bootloader
+fastboot flash abl abl.img
+   
+recovery wipe data ipsm 等等
+#define RECOVERY_WIPE_DATA "recovery\n--wipe_data\n--reason=MasterClearConfirm\n--locale=en_US\n"
+#define RECOVERY_WIPE_DATA_IPSM "recovery\n--wipe_data\n--wipe_ipsm\n--reason=MasterClearConfirm\n--locale=en_US\n"
+
+
+dubai 做factory reset发送intent
+ private void doMasterClear() {
+        Intent intent = new Intent(Intent.ACTION_MASTER_CLEAR);
+        intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+        intent.putExtra(Intent.EXTRA_REASON, "MasterClearConfirm");
+        intent.putExtra(Intent.EXTRA_WIPE_EXTERNAL_STORAGE, mEraseSdCard);
+        if (mEraseIpsm) {
+            intent.putExtra("erase_ipsm", mEraseIpsm);
+        }
+        getActivity().sendBroadcast(intent);
+        // Intent handling is asynchronous -- assume it will happen soon.
+    }
+MasterClearReceiver会接受这个广播，通过RecoverySystem.rebootWipeUserData来进recoverymode 清除分区。
+
+
+如果要使用android-res.apk里的资源。需要android-res里的symbol.xml 和 public.xml导出资源索引。
+
+查看内存使用情况
+adb shell dumpsys meminfo [pid]
+
+网络adb设置
+setprop service.adb.tcp.port 5555
+kill -9 adbd
+adb connect<ip>:<port>
+
+判断当前是否在跑monkey
+ if (!ActivityManager.isUserAMonkey())
+ 
+生成差分包
+build/tools/releasetools/ota_from_target_files -d MMC -k ./device/honeywell/common-8x74/security/platform -i helsinki-target_files-59.02.03.0046-signed.zip helsinki-target_files-59.02.04.0070-signed.zip Wujiu.zip
+
+
+ota包签名
+java -Xmx512m -jar out/host/linux-x86/framework/signapk.jar -w device/honeywell/common-8x74/security/platform.x509.pem device/honeywell/common-8x74/security/platform.pk8  
+
+//在当前目录及其子目录的php文件中查找include字符串
+find -name '*.php'|xargs grep 'include'
+find . -name '*.php' -exec grep -i -nH "include" {} \;//同上
+
+
+evan电话
+13776084360
+
+
+tmux 回话操作
+tmux new -s foo # 新建名称为 foo 的会话
+tmux -2 attach -t name
+tmux ls # 列出所有 tmux 会话
+tmux kill-session -t foo # 删除名称为 foo 的会话
+tmux kill-server # 删除所有的会话
+
+002服务器
+jenkinsSZ 
+HON123well
+172.31.48.9
+
+github 登录
+lgrddt
+marvell@99
+git@github.com:lgrddt/workrecord.git
+
+java判断一个类是另一个类的子类
+  if (!SystemService.class.isAssignableFrom(serviceClass)) {
+                throw new RuntimeException("Failed to create " + name
+                        + ": service must extend " + SystemService.class.getName());
+            }
+            
+            
+commES source code
+You can access to https://bitbucket.honeywell.com/projects/ESMAD/repos/commones_android/browse
+               
+Branch Name	Project
+master	CT60 N /CN80 N
+M_2016Q4_release	CT50 M/D75E M
+Phoenix_Release	CN75 M/CK75 M
+Melbourne_Release	CT51 M
+KK_Release	CT50 KK/D75E KK
+
+commES provision
+setprop sys.hsm.provisioning true
+
+检查setup wizard是否完成
+boolean completed = Settings.Secure.getInt(context.getContentResolver(),USER_SETUP_COMPLETE, 0) != 0;
+boolean provisioned = Settings.Global.getInt(context.getContentResolver(),Settings.Global.DEVICE_PROVISIONED, 0) != 0;
+
+把jni打包到apk里
+LOCAL_JNI_SHARED_LIBRARIES := libnative-keyremap
+
+
+android native 读文件到字符串 system/core/base下有很多处理字符串的函数
+std::string dt_file;
+android::base::ReadFileToString(file_name, &dt_file);
+
+autoinstall install pkg ota
+IPSM\honeywell\autoinstall
+
+操作property在init 动作
+
+on property:persist.sys.ssr.enable_debug=*
+    write /sys/module/subsystem_restart/parameters/enable_debug ${persist.sys.ssr.enable_debug}
+
+    
+sepolicy转换
+audit2allow -i 22.txt
+
+
+bugreport 启动通过ctrl.start启动dumstate. bugreport通过socket与dumpstate建立连接。dumpstate把数据通过socket发给bugreport
+
+susken interface
+subhashree.dalai@sasken.com 
+
+
+跑cts 单条case
+CtsVideoTestCases	android.video.cts.VideoEncoderDecoderTest#testHevcOther0Perf3840x2160
+run cts -m CtsVideoTestCases -t android.video.cts.VideoEncoderDecoderTest#testHevcOther0Perf3840x2160
+
+license checker
+生成license.把license放到Internal storage 根目录，reboot

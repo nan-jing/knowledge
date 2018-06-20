@@ -1,0 +1,78 @@
+android中进程间通信有多种方式。基本常用的是3种，1：socket通信。2：binder通信。3 共享内存。
+
+前面两种比较常见，在安卓中到处都有应用。共享内存相对用的不多。今天我们来学习下共享内存的机制。水平有限，难免有瑕疵，
+共享内存，目标就是弄一块内存，两个进程都可以访问。都可以用。用这个词真好。哪哪都适合。姑娘也可以拿过来用。
+
+那内存是操作系统管理的。这就需要一个进程先申请一块内存，就是服务端。服务端先申请了一块内存。把这块内存映射到自己进程的地址空间，然后把这块内存信息告诉客户端。客户端进程在把这块内存映射
+到自己的地址空间。哎，这样就可以了。两个进程都可以对自己的映射地址做读写了。
+
+1 服务端如何申请这块内存呢？
+2 如何映射到自己的进程的地址空间呢？
+3 如何把服务端申请的内存信息告诉客户端呢？
+4 客户端如何把服务端传过的地址信息映射到自己的地址空间呢？
+
+基本上解决了这些问题，共享内存就有点入门了。来吧。看看。
+
+这个东西挺复杂，主要涉及到Imemory.cpp文件.
+
+MemoryHeapBase类负责作为服务端用来申请内存，它同时也是个binder服务端，用来把内存信息传给客户端。
+ size = ((size + pagesize-1) & ~(pagesize-1));
+ 页面对齐。申请大小是页面大小的整数倍
+    int fd = ashmem_create_region(name == NULL ? "MemoryHeapBase" : name, size);
+    这句就是在申请共享内存，要记住ashmem_create_region.
+    ALOGE_IF(fd<0, "error creating ashmem region: %s", strerror(errno));
+    
+    status_t MemoryHeapBase::mapfd(int fd, size_t size, uint32_t offset)
+{
+    if (size == 0) {
+        // try to figure out the size automatically
+        struct stat sb;
+        if (fstat(fd, &sb) == 0)
+            size = sb.st_size;
+        // if it didn't work, let mmap() fail.
+    }
+
+    if ((mFlags & DONT_MAP_LOCALLY) == 0) {
+        void* base = (uint8_t*)mmap(0, size,
+                PROT_READ|PROT_WRITE, MAP_SHARED, fd, offset);
+        if (base == MAP_FAILED) {
+        
+            ALOGE("mmap(fd=%d, size=%u) failed (%s)",
+                    fd, uint32_t(size), strerror(errno));
+            close(fd);
+            return -errno;
+        }
+        //ALOGD("mmap(fd=%d, base=%p, size=%lu)", fd, base, size);
+        mBase = base;
+        mNeedUnmap = true;
+    } else  {
+        mBase = 0; // not MAP_FAILED
+        mNeedUnmap = false;
+    }
+    mFD = fd;
+    mSize = size;
+    mOffset = offset;
+    return NO_ERROR;
+}
+mmap用来把申请的内存映射到进程的地址空间。所以要看清楚ashmem_create_region申请内存，返回了fd, 也就是资源索引id. 这里mmap把该资源映射过来了。返回了进程内存映射地址。
+
+这样server的内存分配就完成了，但是考虑到手持设备，内存使用珍贵。安卓这边有把这块大内存精细化管理了。把这块内存在划分成小块，供client端使用。
+
+MemoryBase::MemoryBase(const sp<IMemoryHeap>& heap,
+        ssize_t offset, size_t size)
+    : mSize(size), mOffset(offset), mHeap(heap)
+{
+}
+这个类就在申请memoryHeapBase管理的大内存的一小块。通过参数也可以看到。
+MemoryBase::MemoryBase(const sp<IMemoryHeap>& heap,
+        ssize_t offset, size_t size)
+    : mSize(size), mOffset(offset), mHeap(heap)
+{
+}
+我们可以看到这是从大内存里，申请偏移量，和大小的小内存。
+
+
+
+
+        
+        

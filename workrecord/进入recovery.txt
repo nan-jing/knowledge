@@ -1,0 +1,986 @@
+返回主页 cuixiaolei的技术博客记录每一点进步
+首页新随笔联系管理
+随笔 - 18  文章 - 0  评论 - 4
+Recovery启动流程(1)--- 应用层到开机进入recovery详解
+转载请注明来源：cuixiaolei的技术博客
+
+ 
+
+　进入recovery有两种方式，一种是通过组合键进入recovery，另一种是上层应用设置中执行安装/重置/清除缓存等操作进行recovery。这篇文档主要讲解上层应用是如何进入到recovery的。本文以高通平台为例。
+
+　　
+
+1.app执行安装/重置/清楚缓存操作调用代码文件frameworks/base/core/java/android/os/RecoverySystem.java
+
+不同的操作使用不同的方法：
+
+安装升级包  --------  installPackage
+
+清除用户数据------  rebootWipeUserData
+
+清楚缓存  -----------  rebootWipeCache
+
+上面的所有操作都是往/cache/recovery/command文件中写入不同的命令，在进入recovery后（recovery.cpp）对command的关键字进行判断，执行相应的操作，下文会详细讲解，这里先简单提及。
+
+ 
+
+复制代码
+bootable/recovery/recovery.app
+static const struct option OPTIONS[] = {
+  { "send_intent", required_argument, NULL, 'i' },
+  { "update_package", required_argument, NULL, 'u' },
+
+#ifdef TARGET_USE_REDBEND_FOTA
+  { "omadm_package", required_argument, NULL, 'o' },
+#endif
+
+  { "wipe_data", no_argument, NULL, 'w' },
+  { "wipe_cache", no_argument, NULL, 'c' },
+  { "show_text", no_argument, NULL, 't' },
+  { "sideload", no_argument, NULL, 's' },
+  { "sideload_auto_reboot", no_argument, NULL, 'a' },
+  { "just_exit", no_argument, NULL, 'x' },
+  { "locale", required_argument, NULL, 'l' },
+  { "stages", required_argument, NULL, 'g' },
+  { "shutdown_after", no_argument, NULL, 'p' },
+  { "reason", required_argument, NULL, 'r' },
+  { NULL, 0, NULL, 0 },
+};
+
+..................
+
+int
+main(int argc, char **argv) {
+....
+get_args(&argc, &argv); //提取cache/recovery/command中的信息
+....
+while ((arg = getopt_long(argc, argv, "", OPTIONS, NULL)) != -1) {      //解析cache/recovery/command文件中的信息
+        printf("***** xiaolei 2\n");
+        switch (arg) {
+        case 'i': send_intent = optarg; break;
+        case 'u': update_package = optarg; break;
+
+
+        case 'w': should_wipe_data = true; break;
+        case 'c': should_wipe_cache = true; break;
+        case 't': show_text = true; break;
+        case 's': sideload = true; break;
+        case 'a': sideload = true; sideload_auto_reboot = true; break;
+        case 'x': just_exit = true; break;
+        case 'l': locale = optarg; break;
+        case 'g': {
+            if (stage == NULL || *stage == '\0') {
+                char buffer[20] = "1/";
+                strncat(buffer, optarg, sizeof(buffer)-3);
+                stage = strdup(buffer);
+            }
+            break;
+        }
+        case 'p': shutdown_after = true; break;
+        case 'r': reason = optarg; break;
+        case '?':
+            LOGE("Invalid command argument\n");
+            continue;
+        }
+    }
+}
+复制代码
+ 
+
+ 
+
+本文以installPackage为例：
+
+ 
+
+复制代码
+frameworks/base/core/java/android/os/RecoverySystem.java
+public static void installPackage(Context context, File packageFile)
+        throws IOException {
+        String filename = packageFile.getCanonicalPath();    //获取升级包路径
+        String internalPath = Environment.maybeTranslateEmulatedPathToInternal(new File(filename)).getPath();
+        FileWriter uncryptFile = new FileWriter(UNCRYPT_FILE);
+        try {
+            uncryptFile.write(internalPath + "\n");
+        } finally {
+            uncryptFile.close();
+        }
+        Log.w(TAG, "!!! REBOOTING TO INSTALL " + filename + " !!!");
+        Log.w(TAG, "!!! REBOOTING TO INSTALL REALPATH " + internalPath + " !!!");
+
+        // If the package is on the /data partition, write the block map file
+        // If the package is on internal storage sdcard,write the block map file
+        // into COMMAND_FILE instead.
+        if (filename.startsWith("/data/")                           //加密处理，block.map是解密的映射文件
+                ||filename.startsWith("/storage/emulated/0/")) {
+            filename = "@/cache/recovery/block.map";
+        }
+
+        final String filenameArg = "--update_package=" + filename;     //把“--update_package=path” 通过bootCommand方法写入到cache/recovery/command文件中
+        final String localeArg = "--locale=" + Locale.getDefault().toString();  //recovery显示语言
+        bootCommand(context, filenameArg, localeArg);
+    }
+
+复制代码
+ 
+
+installPackage方法会嗲用bootCommand()方法，此时参数为（context,向cache/recovery/command文件中写入的信息，语言信息）
+复制代码
+private static void bootCommand(Context context, String... args) throws IOException {
+        RECOVERY_DIR.mkdirs();  // In case we need it
+        COMMAND_FILE.delete();  // In case it's not writable
+        LOG_FILE.delete();
+
+        FileWriter command = new FileWriter(COMMAND_FILE);     //向/cache/recovery/command中写入--update_package=path
+        try {
+            for (String arg : args) {
+                if (!TextUtils.isEmpty(arg)) {
+                    command.write(arg);
+                    command.write("\n");
+                }
+            }
+        } finally {
+            command.close();
+        }
+
+        // Having written the command file, go ahead and reboot
+        PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+        pm.reboot(PowerManager.REBOOT_RECOVERY);  //PowerManager.REBOOT_RECOVERY的值为字符串"recovery"
+
+        throw new IOException("Reboot failed (no permissions?)");
+    }
+复制代码
+pm.reboot(PowerManager.REBOOT_RECOVERY); 参数为字符串("recovery")
+复制代码
+frameworks/base/core/java/android/os/PowerMangager.java
+
+public void reboot(String reason) {
+        try {
+            mService.reboot(false, reason, true);
+        } catch (RemoteException e) {
+        }
+    }
+复制代码
+ mService.reboot(false, reason, true);    参数为(false,"recovery",true)
+复制代码
+frameworks/base/services/core/java/com/android/server/power/PowerManagerService.java
+
+public void reboot(boolean confirm, String reason, boolean wait) {       
+            mContext.enforceCallingOrSelfPermission(android.Manifest.permission.REBOOT, null);
+            if (PowerManager.REBOOT_RECOVERY.equals(reason)) {
+                mContext.enforceCallingOrSelfPermission(android.Manifest.permission.RECOVERY, null);
+            }
+
+            final long ident = Binder.clearCallingIdentity();
+            try {
+                shutdownOrRebootInternal(false, confirm, reason, wait);      
+            } finally {
+                Binder.restoreCallingIdentity(ident);
+            }
+        }
+复制代码
+shutdownOrRebootInternal(false, confirm, reason, wait);  参数为(false,false,"recovery",true)
+复制代码
+frameworks/base/services/core/java/com/android/server/power/PowerManagerService.java
+
+private void shutdownOrRebootInternal(final boolean shutdown, final boolean confirm,
+            final String reason, boolean wait) {
+        if (mHandler == null || !mSystemReady) {
+            throw new IllegalStateException("Too early to call shutdown() or reboot()");
+        }
+
+        Runnable runnable = new Runnable() {
+            @Override
+            public void run() {
+                synchronized (this) {
+                    if (shutdown) {                   //此处shutdown=false
+                        ShutdownThread.shutdown(mContext, confirm);
+                    } else {
+                        ShutdownThread.reboot(mContext, reason, confirm);   //执行此处代码
+                    }
+                }
+            }
+        };
+
+        // ShutdownThread must run on a looper capable of displaying the UI.
+        Message msg = Message.obtain(mHandler, runnable);
+        msg.setAsynchronous(true);
+        mHandler.sendMessage(msg);
+
+        // PowerManager.reboot() is documented not to return so just wait for the inevitable.
+        if (wait) {
+            synchronized (runnable) {
+                while (true) {
+                    try {
+                        runnable.wait();
+                    } catch (InterruptedException e) {
+                    }
+                }
+            }
+        }
+    }
+复制代码
+ShutdownThread.reboot(mContext, reason, confirm); 参数为(mContex,"recovery",false)
+此处开了一个线程处理reboot
+复制代码
+frameworks/base/services/core/java/com/android/server/power/ShutdownThread.java
+
+public static void reboot(final Context context, String reason, boolean confirm) {        //方法中的变量为全局变量
+
+        mReboot = true;
+        mRebootSafeMode = false;
+        mRebootUpdate = false;
+        mRebootReason = reason;
+        shutdownInner(context, confirm);       //此方法是在手机界面上弹出一个确认框，是否重启，此处的代码不再追了
+    }
+
+//程序一定会执行run()方法
+
+/***********************
+mReboot = true;
+mRebootSafeMode = false;
+mRebootUpdate = false;
+mRebootReason = "recovery";
+***********************/
+public void run() {
+        BroadcastReceiver br = new BroadcastReceiver() {
+            @Override public void onReceive(Context context, Intent intent) {
+                // We don't allow apps to cancel this, so ignore the result.
+                actionDone();
+            }
+        };
+
+        /*
+         * Write a system property in case the system_server reboots before we
+         * get to the actual hardware restart. If that happens, we'll retry at
+         * the beginning of the SystemServer startup.
+         */
+        {
+            String reason = (mReboot ? "1" : "0") + (mRebootReason != null ? mRebootReason : "");     //reason的值为"recovery"
+            SystemProperties.set(SHUTDOWN_ACTION_PROPERTY, reason);  //设置系统属性sys.shutdown.requested = "recovery"
+        }
+
+        /*
+         * If we are rebooting into safe mode, write a system property
+         * indicating so.
+         */
+        if (mRebootSafeMode) {
+            SystemProperties.set(REBOOT_SAFEMODE_PROPERTY, "1");
+        }
+
+        Log.i(TAG, "Sending shutdown broadcast...");
+        setBootValue("silent_mode",mAudioManager.isSilentMode() ? "1" : "0");
+        if(checkAnimationFileExist() && mContext.getResources().
+                getBoolean(com.android.internal.R.bool.feature_tctfw_shutdown_animation_on) &&
+                !mRebootUpdate) {
+            lockDevice();
+            showShutdownAnimation();
+        }
+
+
+        // First send the high-level shut down broadcast.
+        mActionDone = false;
+        Intent intent = new Intent(Intent.ACTION_SHUTDOWN);
+        intent.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+        mContext.sendOrderedBroadcastAsUser(intent,
+                UserHandle.ALL, null, br, mHandler, 0, null, null);
+
+        final long endTime = SystemClock.elapsedRealtime() + MAX_BROADCAST_TIME;
+        synchronized (mActionDoneSync) {
+            while (!mActionDone) {
+                long delay = endTime - SystemClock.elapsedRealtime();
+                if (delay <= 0) {
+                    Log.w(TAG, "Shutdown broadcast timed out");
+                    break;
+                } else if (mRebootUpdate) {
+                    int status = (int)((MAX_BROADCAST_TIME - delay) * 1.0 *
+                            BROADCAST_STOP_PERCENT / MAX_BROADCAST_TIME);
+                    sInstance.setRebootProgress(status, null);
+                }
+                try {
+                    mActionDoneSync.wait(Math.min(delay, PHONE_STATE_POLL_SLEEP_MSEC));
+                } catch (InterruptedException e) {
+                }
+            }
+        }
+        if (mRebootUpdate) {
+            sInstance.setRebootProgress(BROADCAST_STOP_PERCENT, null);
+        }
+        Log.i(TAG, "Shutting down activity manager...");
+
+        final IActivityManager am =
+            ActivityManagerNative.asInterface(ServiceManager.checkService("activity"));
+        if (am != null) {
+            try {
+                am.shutdown(MAX_BROADCAST_TIME);
+            } catch (RemoteException e) {
+            }
+        }
+        if (mRebootUpdate) {
+            sInstance.setRebootProgress(ACTIVITY_MANAGER_STOP_PERCENT, null);
+        }
+
+        Log.i(TAG, "Shutting down package manager...");
+
+        final PackageManagerService pm = (PackageManagerService)
+            ServiceManager.getService("package");
+        if (pm != null) {
+            pm.shutdown();
+        }
+        if (mRebootUpdate) {
+            sInstance.setRebootProgress(PACKAGE_MANAGER_STOP_PERCENT, null);
+        }
+
+        // Shutdown radios.
+        shutdownRadios(MAX_RADIO_WAIT_TIME);
+        if (mRebootUpdate) {
+            sInstance.setRebootProgress(RADIO_STOP_PERCENT, null);
+        }
+
+        // Mod-by-yanxi.liu, for sdcard upgrade uncrypt, Defect-1357392
+        if (mRebootUpdate) {
+            sInstance.setRebootProgress(MOUNT_SERVICE_STOP_PERCENT, null);
+            // If it's to reboot to install update, invoke uncrypt via init service.
+            uncrypt();
+        }
+        // Mod-by-yanxi.liu, for sdcard upgrade uncrypt, Defect-1357392
+
+        // Shutdown MountService to ensure media is in a safe state
+        IMountShutdownObserver observer = new IMountShutdownObserver.Stub() {
+            public void onShutDownComplete(int statusCode) throws RemoteException {
+                Log.w(TAG, "Result code " + statusCode + " from MountService.shutdown");
+                actionDone();
+            }
+        };
+
+        Log.i(TAG, "Shutting down MountService");
+
+        // Set initial variables and time out time.
+        mActionDone = false;
+        final long endShutTime = SystemClock.elapsedRealtime() + MAX_SHUTDOWN_WAIT_TIME;
+        synchronized (mActionDoneSync) {
+            try {
+                final IMountService mount = IMountService.Stub.asInterface(
+                        ServiceManager.checkService("mount"));
+                if (mount != null) {
+                    mount.shutdown(observer);
+                } else {
+                    Log.w(TAG, "MountService unavailable for shutdown");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Exception during MountService shutdown", e);
+            }
+            while (!mActionDone) {
+                long delay = endShutTime - SystemClock.elapsedRealtime();
+                if (delay <= 0) {
+                    Log.w(TAG, "Shutdown wait timed out");
+                    break;
+                } else if (mRebootUpdate) {
+                    int status = (int)((MAX_SHUTDOWN_WAIT_TIME - delay) * 1.0 *
+                            (MOUNT_SERVICE_STOP_PERCENT - RADIO_STOP_PERCENT) /
+                            MAX_SHUTDOWN_WAIT_TIME);
+                    status += RADIO_STOP_PERCENT;
+                    sInstance.setRebootProgress(status, null);
+                }
+                try {
+                    mActionDoneSync.wait(Math.min(delay, PHONE_STATE_POLL_SLEEP_MSEC));
+                } catch (InterruptedException e) {
+                }
+            }
+        }
+        // add by feikuang for defect 1453123 start
+        isVibrate = mContext.getResources().getBoolean(com.android.internal.R.bool.config_isVibrate);
+        Log.i(TAG,"isVibrate " + isVibrate);
+        // add by feikuang for defect 1453123 end
+        waitShutDownAnimationCompleted();
+        rebootOrShutdown(mContext, mReboot, mRebootReason);        //程序执行到这里
+    }
+
+
+复制代码
+rebootOrShutdown(mContext, mReboot, mRebootReason); 参数为(mContext,true,"recovery")
+复制代码
+frameworks/base/services/core/java/com/android/server/power/ShutdownThread.java
+public static void rebootOrShutdown(final Context context, boolean reboot, String reason) {
+        deviceRebootOrShutdown(reboot, reason);
+        //[FEATURE]-Add-BEGIN by TSNJ.shu.wang,11/06/2015,TASK-871146
+        String bootAlarms = SystemProperties.get("sys.boot.alarm");
+        boolean isBootAlarms = bootAlarms != null && bootAlarms.equals("1");
+        if (reboot) {
+            Log.i(TAG, "Rebooting, reason: " + reason);
+            PowerManagerService.lowLevelReboot(reason);           //程序执行到这里
+            Log.e(TAG, "Reboot failed, will attempt shutdown instead");
+        } else if (SHUTDOWN_VIBRATE_MS > 0 && context != null && !isBootAlarms && isVibrate) {
+        //[FEATURE]-Add-END by TSNJ.shu.wang,11/06/2015,TASK-871146
+            // vibrate before shutting down
+            Vibrator vibrator = new SystemVibrator(context);
+            try {
+                vibrator.vibrate(SHUTDOWN_VIBRATE_MS, VIBRATION_ATTRIBUTES);
+            } catch (Exception e) {
+                // Failure to vibrate shouldn't interrupt shutdown.  Just log it.
+                Log.w(TAG, "Failed to vibrate during shutdown.", e);
+            }
+
+            // vibrator is asynchronous so we need to wait to avoid shutting down too soon.
+            try {
+                Thread.sleep(SHUTDOWN_VIBRATE_MS);
+            } catch (InterruptedException unused) {
+            }
+        }
+
+        // Shutdown power
+        Log.i(TAG, "Performing low-level shutdown...");
+        PowerManagerService.lowLevelShutdown();
+    }
+复制代码
+PowerManagerService.lowLevelReboot(reason);  参数为"recovery"
+复制代码
+frameworks/base/services/core/java/com/android/server/power/PowerManagerService.java
+public static void lowLevelReboot(String reason) {
+        if (reason == null) {
+            reason = "";
+        }
+        if (reason.equals(PowerManager.REBOOT_RECOVERY)) {
+            // If we are rebooting to go into recovery, instead of
+            // setting sys.powerctl directly we'll start the
+            // pre-recovery service which will do some preparation for
+            // recovery and then reboot for us.
+            SystemProperties.set("ctl.start", "pre-recovery");    //到这里可以知道，一个新的进程会被enable
+        } else {
+            SystemProperties.set("sys.powerctl", "reboot," + reason);
+        }
+        try {
+            Thread.sleep(20 * 1000L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        Slog.wtf(TAG, "Unexpected return from lowLevelReboot!");
+    }
+复制代码
+SystemProperties.set("ctl.start", "pre-recovery");    //到这里可以知道，一个新的进程会被enable
+system/core/rootdir/init.rc
+service pre-recovery /system/bin/uncrypt --reboot   
+    class main
+    disabled
+    oneshot
+service pre-recovery /system/bin/uncrypt --reboot    system/bin/uncrypt 这个程序会被执行，传入的参数是--reboot
+uncrypt的源码位于bootable/recovery/uncrypt/uncrypt.cpp，下面对uncrypt进行分析
+复制代码
+bootable/recovery/uncrypt/uncrypt.cpp
+int main(int argc, char** argv) {          //此处argc为2  argv[1]="--reboot"
+    const char* input_path;
+    const char* map_file;
+
+    if (argc != 3 && argc != 1 && (argc == 2 && strcmp(argv[1], "--reboot") != 0)) {
+        fprintf(stderr, "usage: %s [--reboot] [<transform_path> <map_file>]\n", argv[0]);
+        return 2;
+    }
+
+    // When uncrypt is started with "--reboot", it wipes misc and reboots.
+    // Otherwise it uncrypts the package and writes the block map.
+    if (argc == 2) {   //程序执行到此处
+        if (read_fstab() == NULL) {   
+            return 1;
+        }
+        wipe_misc();        //擦出misc分区内容
+        reboot_to_recovery();  //重启到recovery
+    } else {
+        // The pipe has been created by the system server.
+        int status_fd = open(status_file.c_str(), O_WRONLY | O_CREAT | O_SYNC, S_IRUSR | S_IWUSR);
+        if (status_fd == -1) {
+            ALOGE("failed to open pipe \"%s\": %s\n", status_file.c_str(), strerror(errno));
+            return 1;
+        }
+        std::string package;
+        if (argc == 3) {
+            // when command-line args are given this binary is being used
+            // for debugging.
+            input_path = argv[1];
+            map_file = argv[2];
+        } else {
+            if (!find_uncrypt_package(package)) {
+                android::base::WriteStringToFd("-1\n", status_fd);
+                close(status_fd);
+                return 1;
+            }
+            input_path = package.c_str();
+            map_file = cache_block_map.c_str();
+        }
+
+        int status = uncrypt(input_path, map_file, status_fd);
+        if (status != 0) {
+            android::base::WriteStringToFd("-1\n", status_fd);
+            close(status_fd);
+            return 1;
+        }
+
+        android::base::WriteStringToFd("100\n", status_fd);
+        close(status_fd);
+    }
+
+    return 0;
+}
+复制代码
+reboot_to_recovery();
+复制代码
+bootable/recovery/uncrpty/uncrpty.cpp
+static void reboot_to_recovery() {
+    ALOGI("rebooting to recovery");
+    property_set("sys.powerctl", "reboot,recovery");      
+    sleep(10);
+    ALOGE("reboot didn't succeed?");
+}
+复制代码
+property_set("sys.powerctl", "reboot,recovery");     sys.powerctl属性出发开关在init.rc中
+system/core/rootdir/init.rc
+on property:sys.powerctl=*
+    powerctl ${sys.powerctl}
+system/core/init/keywords.h
+KEYWORD(powerctl,    COMMAND, 1, do_powerctl
+复制代码
+system/core/init/builtins.cpp               
+int do_powerctl(int nargs, char **args)           //传入的参数为字符串"reboot,recovery"
+{
+    char command[PROP_VALUE_MAX];
+    int res;
+    int len = 0;
+    int cmd = 0;
+    const char *reboot_target;
+
+    res = expand_props(command, args[1], sizeof(command));
+    if (res) {
+        ERROR("powerctl: cannot expand '%s'\n", args[1]);
+        return -EINVAL;
+    }
+
+    if (strncmp(command, "shutdown", 8) == 0) {
+        cmd = ANDROID_RB_POWEROFF;
+        len = 8;
+    } else if (strncmp(command, "reboot", 6) == 0) {    //程序走到这，cmd=ANDROID_RB_RESTART2
+        cmd = ANDROID_RB_RESTART2;
+        len = 6;
+    } else {
+        ERROR("powerctl: unrecognized command '%s'\n", command);
+        return -EINVAL;
+    }
+
+    if (command[len] == ',') {
+        char prop_value[PROP_VALUE_MAX] = {0};
+        reboot_target = &command[len + 1];    //设置reboot_target = recovery
+
+        if ((property_get("init.svc.recovery", prop_value) == 0) &&
+            (strncmp(reboot_target, "keys", 4) == 0)) {
+            ERROR("powerctl: permission denied\n");
+            return -EINVAL;
+        }
+    } else if (command[len] == '\0') {
+        reboot_target = "";
+    } else {
+        ERROR("powerctl: unrecognized reboot target '%s'\n", &command[len]);
+        return -EINVAL;
+    }
+
+    return android_reboot(cmd, 0, reboot_target);     
+}
+复制代码
+android_reboot(cmd, 0, reboot_target);    参数为(ANDROID_RB_RESTART2, 0, "recovery")
+复制代码
+system/core/libcutils/android_reboot.c
+int android_reboot(int cmd, int flags UNUSED, const char *arg)
+{
+    int ret;
+
+    sync();
+    remount_ro();
+
+    switch (cmd) {
+        case ANDROID_RB_RESTART:
+            ret = reboot(RB_AUTOBOOT);
+            break;
+
+        case ANDROID_RB_POWEROFF:
+            ret = reboot(RB_POWER_OFF);
+            break;
+
+        case ANDROID_RB_RESTART2:             //程序跑到这里其中arg="recovery"
+            ret = syscall(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+                           LINUX_REBOOT_CMD_RESTART2, arg);
+            break;
+
+        default:
+            ret = -1;
+    }
+
+    return ret;
+}
+复制代码
+ret = syscall(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+                           LINUX_REBOOT_CMD_RESTART2, arg);
+kernel/include/uapi/asm-generic/unistd.h
+#define __NR_reboot 142
+__SYSCALL(__NR_reboot, sys_reboot）
+__NR_reboot被映射到sys_reboot上,会执行SYSCALL_DEFINE4(),为什么会这么执行还不清楚。
+
+复制代码
+kernel/kernel/sys.c
+SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+        void __user *, arg)                                                 //对应LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2, LINUX_REBOOT_CMD_RESTART2, "recovery"
+{
+    struct pid_namespace *pid_ns = task_active_pid_ns(current);
+    char buffer[256];
+    int ret = 0;
+
+    /* We only trust the superuser with rebooting the system. */
+    if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))
+        return -EPERM;
+
+    /* For safety, we require "magic" arguments. */
+    if (magic1 != LINUX_REBOOT_MAGIC1 ||
+        (magic2 != LINUX_REBOOT_MAGIC2 &&
+                    magic2 != LINUX_REBOOT_MAGIC2A &&
+            magic2 != LINUX_REBOOT_MAGIC2B &&
+                    magic2 != LINUX_REBOOT_MAGIC2C))
+        return -EINVAL;
+
+    /*
+     * If pid namespaces are enabled and the current task is in a child
+     * pid_namespace, the command is handled by reboot_pid_ns() which will
+     * call do_exit().
+     */
+    ret = reboot_pid_ns(pid_ns, cmd);
+    if (ret)
+        return ret;
+
+    /* Instead of trying to make the power_off code look like
+     * halt when pm_power_off is not set do it the easy way.
+     */
+    if ((cmd == LINUX_REBOOT_CMD_POWER_OFF) && !pm_power_off)
+        cmd = LINUX_REBOOT_CMD_HALT;
+
+    mutex_lock(&reboot_mutex);
+    switch (cmd) {
+    case LINUX_REBOOT_CMD_RESTART:
+        kernel_restart(NULL);
+        break;
+
+    case LINUX_REBOOT_CMD_CAD_ON:
+        C_A_D = 1;
+        break;
+
+    case LINUX_REBOOT_CMD_CAD_OFF:
+        C_A_D = 0;
+        break;
+
+    case LINUX_REBOOT_CMD_HALT:
+        kernel_halt();
+        do_exit(0);
+        panic("cannot halt");
+
+    case LINUX_REBOOT_CMD_POWER_OFF:
+        kernel_power_off();
+        do_exit(0);
+        break;
+
+    case LINUX_REBOOT_CMD_RESTART2:
+        if (strncpy_from_user(&buffer[0], arg, sizeof(buffer) - 1) < 0) {
+            ret = -EFAULT;
+            break;
+        }
+        buffer[sizeof(buffer) - 1] = '\0';
+
+        kernel_restart(buffer);              //程序会跑到这里
+        break;
+
+#ifdef CONFIG_KEXEC
+    case LINUX_REBOOT_CMD_KEXEC:
+        ret = kernel_kexec();
+        break;
+#endif
+
+#ifdef CONFIG_HIBERNATION
+    case LINUX_REBOOT_CMD_SW_SUSPEND:
+        ret = hibernate();
+        break;
+#endif
+
+    default:
+        ret = -EINVAL;
+        break;
+    }
+    mutex_unlock(&reboot_mutex);
+    return ret;
+}
+复制代码
+kernel_restart(buffer); 参数为("recovery")
+复制代码
+kernel/kernel/sys.c
+void kernel_restart(char *cmd)
+{    
+    kernel_restart_prepare(cmd);       
+    migrate_to_reboot_cpu();
+    syscore_shutdown();
+    if (!cmd)
+        printk(KERN_EMERG "Restarting system.\n");
+    else
+        printk(KERN_EMERG "Restarting system with command '%s'.\n", cmd);
+    kmsg_dump(KMSG_DUMP_RESTART);
+    machine_restart(cmd);
+}
+复制代码
+machine_restart(cmd); 参数为("recovery")
+
+复制代码
+kernel/arch/arm/kernel/process.c
+void machine_restart(char *cmd)
+{
+    preempt_disable();
+    smp_send_stop();
+
+    /* Flush the console to make sure all the relevant messages make it
+     * out to the console drivers */
+    arm_machine_flush_console();
+
+    arm_pm_restart(reboot_mode, cmd);
+
+    /* Give a grace period for failure to restart of 1s */
+    mdelay(1000);
+
+    /* Whoops - the platform was unable to reboot. Tell the user! */
+    printk("Reboot failed -- System halted\n");
+    local_irq_disable();
+    while (1);
+}
+复制代码
+arm_pm_restart(reboot_mode, cmd);
+
+复制代码
+kernel/drivers/power/reset/msm-poweroff.c
+static int msm_restart_probe(struct platform_device *pdev)
+{
+ .....
+arm_pm_restart = do_msm_restart;
+.....       
+}
+复制代码
+复制代码
+kernel/drivers/power/reset/msm-poweroff.c
+static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
+{
+    int ret;
+    struct scm_desc desc = {
+        .args[0] = 1,
+        .args[1] = 0,
+        .arginfo = SCM_ARGS(2),
+    };
+
+    pr_notice("Going down for restart now\n");
+
+    msm_restart_prepare(cmd);   //程序走到这里
+
+#ifdef CONFIG_MSM_DLOAD_MODE
+    /*
+     * Trigger a watchdog bite here and if this fails,
+     * device will take the usual restart path.
+     */
+
+    if (WDOG_BITE_ON_PANIC && in_panic)
+        msm_trigger_wdog_bite();
+#endif
+
+    /* Needed to bypass debug image on some chips */
+    if (!is_scm_armv8())
+        ret = scm_call_atomic2(SCM_SVC_BOOT,
+                   SCM_WDOG_DEBUG_BOOT_PART, 1, 0);
+    else
+        ret = scm_call2_atomic(SCM_SIP_FNID(SCM_SVC_BOOT,
+              SCM_WDOG_DEBUG_BOOT_PART), &desc);
+    if (ret)
+        pr_err("Failed to disable secure wdog debug: %d\n", ret);
+
+    halt_spmi_pmic_arbiter();
+    deassert_ps_hold();
+
+    mdelay(10000);
+}
+复制代码
+msm_restart_prepare(cmd);  参数为("recovery")
+复制代码
+kernel/drivers/power/reset/msm-poweroff.c
+static void msm_restart_prepare(const char *cmd)
+{
+#ifdef CONFIG_MSM_SUBSYSTEM_RESTART
+    extern char panic_subsystem[];
+#endif /* CONFIG_MSM_SUBSYSTEM_RESTART */
+    bool need_warm_reset = false;
+
+#ifdef CONFIG_MSM_DLOAD_MODE
+
+    /* Write download mode flags if we're panic'ing
+     * Write download mode flags if restart_mode says so
+     * Kill download mode if master-kill switch is set
+     */
+
+    set_dload_mode(download_mode &&
+            (in_panic || restart_mode == RESTART_DLOAD));
+#endif
+
+    if (qpnp_pon_check_hard_reset_stored()) {
+        /* Set warm reset as true when device is in dload mode
+         *  or device doesn't boot up into recovery, bootloader or rtc.
+         */
+        if (get_dload_mode() ||
+            ((cmd != NULL && cmd[0] != '\0') &&
+            strcmp(cmd, "recovery") &&
+            strcmp(cmd, "bootloader") &&
+            strcmp(cmd, "rtc")))
+            need_warm_reset = true;
+    } else {
+        need_warm_reset = (get_dload_mode() ||
+                (cmd != NULL && cmd[0] != '\0'));
+    }
+
+    /* Hard reset the PMIC unless memory contents must be maintained. */
+    if (need_warm_reset || restart_mode == RESTART_DLOAD) {// MODIFIED by xin.peng, 2016-03-21, BUG-1761259
+        qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
+    } else {
+        qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
+    }
+
+    if (cmd != NULL) {
+        if (!strncmp(cmd, "bootloader", 10)) {
+            qpnp_pon_set_restart_reason(
+                PON_RESTART_REASON_BOOTLOADER);
+            __raw_writel(0x77665500, restart_reason);
+        } else if (!strncmp(cmd, "recovery", 8)) {
+            qpnp_pon_set_restart_reason(
+                PON_RESTART_REASON_RECOVERY);
+            __raw_writel(0x77665502, restart_reason);          //********************
+
+　　else if (!strcmp(cmd, "rtc")) {
+            qpnp_pon_set_restart_reason(
+                PON_RESTART_REASON_RTC);
+            __raw_writel(0x77665503, restart_reason);
+        } else if (!strncmp(cmd, "oem-", 4)) {
+            unsigned long code;
+            int ret;
+            ret = kstrtoul(cmd + 4, 16, &code);
+            if (!ret)
+                __raw_writel(0x6f656d00 | (code & 0xff),
+                         restart_reason);
+                if (download_mode && (code & 0xff) == 0x3a)
+                    set_dload_mode(1);
+        } else if (!strncmp(cmd, "edl", 3)) {
+            enable_emergency_dload_mode();
+        } else {
+            __raw_writel(0x77665501, restart_reason);
+        }
+    }
+
+#ifdef CONFIG_MSM_SUBSYSTEM_RESTART
+    if (in_panic) {
+        printk(KERN_ERR "subsystem %s crash\n", panic_subsystem);
+        if (!memcmp(panic_subsystem, "modem", 5)) {
+            __raw_writel(0x6f656dc1, restart_reason);
+        } else if (!memcmp(panic_subsystem, "wcnss", 5)) {
+            __raw_writel(0x6f656dc2, restart_reason);
+        } else if (!memcmp(panic_subsystem, "adsp", 4) || !memcmp(panic_subsystem, "ADSP", 4)) {
+            __raw_writel(0x6f656dc3, restart_reason);
+        } else if (!memcmp(panic_subsystem, "venus", 5)) {
+            __raw_writel(0x6f656dc4, restart_reason);
+        } else {
+            __raw_writel(0x6f656dc0, restart_reason);
+        }
+        if (download_mode)
+            set_dload_mode(1);
+    }
+#endif /* CONFIG_MSM_SUBSYSTEM_RESTART */
+
+//add begin by liping.gao,Powering on mode switch to 9008 mode,task:665748
+    if (restart_mode == RESTART_DLOAD) {
+        enable_emergency_dload_mode();
+    }
+//add end by liping.gao
+    flush_cache_all();
+
+    /*outer_flush_all is not supported by 64bit kernel*/
+#ifndef CONFIG_ARM64
+    outer_flush_all();
+#endif
+
+}
+复制代码
+__raw_writel(0x77665502, restart_reason);          //在地址上0x77665502写入"recovery"
+
+
+应用执行升级/清缓存/重置等操作导致底层在地址0x77665502写入"recovery"
+
+当开机以后，在lk阶段会判断这个地址的值，如果是recovery，会设置boot_into_recovery=1,然后读取recovery.img镜像，把recovery.img的地址和ramdisk等信息作为参数启动kernel，从而进入recovery模式，下面进行简单的分析。
+
+lk阶段：
+复制代码
+bootable/bootloader/lk/app/aboot/aboot.c
+......
+#define RECOVERY_MODE        0x77665502
+......
+reboot_mode = check_reboot_mode();
+hard_reboot_mode = check_hard_reboot_mode();
+if (reboot_mode == RECOVERY_MODE ||
+        hard_reboot_mode == RECOVERY_HARD_RESET_MODE) {
+        boot_into_recovery = 1;
+    }
+.....
+复制代码
+ 
+
+ 
+
+
+
+ 
+
+ 
+
+好文要顶 关注我 收藏该文    
+cuixiaolei
+关注 - 0
+粉丝 - 9
++加关注
+2 0
+» 下一篇：android-ramdisk.img分析、recovery.img&boot.img执行过程
+posted @ 2016-04-26 11:36 cuixiaolei 阅读(4786) 评论(...) 编辑 收藏
+抱歉！发生了错误！麻烦反馈至contact@cnblogs.com
+刷新评论刷新页面返回顶部
+华为云1016C2
+最新IT新闻:
+· 一文看懂钛媒体与FF争论的始末：FF破产了吗？
+· “双十一”里，我们被淘宝、京东们“歧视”了！
+· 技术人才都适合创业么？四位微软亚洲研究院前院长这么说
+· 2017年双11购物狂欢节关键词：协同共振
+· 融资9亿美元仅半年 这家盖茨都看好的癌症检测公司又要融资了
+» 更多新闻...
+阿里云1001
+<	2017年11月	>
+日	一	二	三	四	五	六
+29	30	31	1	2	3	4
+5	6	7	8	9	10	11
+12	13	14	15	16	17	18
+19	20	21	22	23	24	25
+26	27	28	29	30	1	2
+3	4	5	6	7	8	9
+最新随笔
+1. USB HID 协议入门
+2. TinyThread源码分析之中断
+3. 《Cortex-M0权威指南》之Cortex-M0编程入门
+4. 《Cortex-M0权威指南》之体系结构---程序映像和启动流程
+5. 《Cortex-M0权威指南》之体系结构---嵌套中断控制器（NVIC）
+6. 《Cortex-M0权威指南》之体系结构---异常和中断
+7. 《Cortex-M0权威指南》之体系结构---栈空间操作
+8. 《Cortex-M0权威指南》之体系结构---存储器系统
+9. 《Cortex-M0权威指南》之体系结构---系统模型
+10. 《Cortex-M0权威指南》之Cortex-M0技术综述
+随笔分类
+android(7)
+Cortex-M0(9)
+TinyThread源码分析(1)
+闲聊
+Copyright ©2017 cuixiaolei

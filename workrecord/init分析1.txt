@@ -1,0 +1,159 @@
+今天和大家分享下 android init进程的运行机制。
+
+在kernel起来后，第一个运行的进程就是init. 他也是其他用户空间进程的父进程。下面一起来分析下它的运行机制。
+
+首先我们的得明白。init进程就干了三件事情。
+1 加载sepolicy.
+2 启动子进程。
+3 管理property.
+
+1 加载sepolicy规则。这个我还没研究透。先等等在说吧。
+2 下面其他两件事情如何完成的。
+
+int main(int argc, char** argv) {
+    if (!strcmp(basename(argv[0]), "ueventd")) {
+        return ueventd_main(argc, argv);
+    }
+    看到这里笑了。原来uevent进程和init进程共用了一套code. 走了不同的分支。 uevent进程用来自动创建设备节点，做热插拔。理解uevent需要理解设备驱动框架。在kset有自设备加入的时候
+    会向上通过netlink发动uevent事件。这个后续课程再细说。
+    
+    add_environment("PATH", _PATH_DEFPATH);
+    设置了系统path环境变量。如果需要修改。就在这里修改就好了
+    #define	_PATH_CONSOLE	"/dev/console"
+#define	_PATH_DEFPATH	"/sbin:/vendor/bin:/system/sbin:/system/bin:/system/xbin"
+#define	_PATH_DEV	"/dev/"
+#define	_PATH_DEVNULL	"/dev/null"
+
+ bool is_first_stage = (argc == 1) || (strcmp(argv[1], "--second-stage") != 0);
+ 看到了这句。很受伤。first_stage, second-stage? 莫非启动分两个步骤。是的。刚开机运行在first_stage. 后续会从新加载代码段，开始第二阶段运行。
+ 
+ 下面判断第一阶段继续挂载文件系统。
+ 设置log输出描述符
+ 
+ selinux_initialize(is_first_stage); 开始了sepolicy的加载，这就进入了/external/libselinux了
+  if (is_first_stage) {
+        if (restorecon("/init") == -1) {
+            ERROR("restorecon failed: %s\n", strerror(errno));
+            security_failure();
+        }
+        char* path = argv[0];
+        char* args[] = { path, const_cast<char*>("--second-stage"), nullptr };
+        if (execv(path, args) == -1) {
+            ERROR("execv(\"%s\") failed: %s\n", path, strerror(errno));
+            security_failure();
+        }
+    }
+    下面这句很重要。有了这句才转入了第二阶段的运行。怎么进入的? execv函数就干这个的。
+    还记着fork execv对吗？注意这里参数显式的second-stage.
+    
+    这就进入了代码段的main函数。下面就进入了
+    
+     if (!is_first_stage) {
+        // Indicate that booting is in progress to background fw loaders, etc.
+        close(open("/dev/.booting", O_WRONLY | O_CREAT | O_CLOEXEC, 0000));
+
+        property_init();
+
+        // If arguments are passed both on the command line and in DT,
+        // properties set in DT always have priority over the command-line ones.
+        process_kernel_dt();
+        process_kernel_cmdline();
+
+        // Propogate the kernel variables to internal variables
+        // used by init as well as the current required properties.
+        export_kernel_boot_props();
+    }
+    
+    先分析property_init. 他的作用就是分配系统共享空间，用来存储property. 这个property空间是所有进程就可以访问的。都可以看到的。这里就看不太懂了。这块空间是共享内存？ 别的进程如何知道
+    这块I内存的地址的呢？即使所有进程都是init子进程，那子进程有时如何把这块内存映射到自己的地址空间的呢？
+    
+    下面把/proc/cmdline内容处理存放到property里，同时export_kernel_boot_props 。
+    
+    [ro.boot.baseband]: [msm]
+[ro.boot.bootdevice]: [msm_sdcc.1]
+[ro.boot.emmc]: [true]
+[ro.boot.hardware]: [qcom]
+[ro.boot.hwrev]: [MVT]
+[ro.boot.serialno]: [15176404D1]
+
+下面开始创建epoll多路监听队列
+epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+监听？ 监听什么？ 监听文件描述符状态的变化，哪个文件描述符？ 如何监听？ 下面分析， 先创建好。
+
+void signal_handler_init() {
+    // Create a signalling mechanism for SIGCHLD.
+    int s[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, s) == -1) {
+        ERROR("socketpair failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    signal_write_fd = s[0];
+    signal_read_fd = s[1];
+
+    // Write to signal_write_fd if we catch SIGCHLD.
+    struct sigaction act;
+    memset(&act, 0, sizeof(act));
+    act.sa_handler = SIGCHLD_handler;
+    act.sa_flags = SA_NOCLDSTOP;
+    sigaction(SIGCHLD, &act, 0);
+
+    reap_any_outstanding_children();
+
+    register_epoll_handler(signal_read_fd, handle_signal);
+这里，这里就是在监听子进程状态变化，我们知道父进程fork出子进程后，当子进程推出时候，自己变成了僵死进程。系统会发送SIGCHLD信号给父进程。父进程来收尸。
+这里处理信号处理函数，同时创建了socketpair,把套接字描述符加到多路监听队列。这样当子进程退出时候，在信号处理函数中往套接字描述符中写个数据，套接字接收端描述符状态变化，此时多路监听开始处理子进程。
+
+这里典型阻塞编程。
+
+void register_epoll_handler(int fd, void (*fn)()) {
+    epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.ptr = reinterpret_cast<void*>(fn);
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+        ERROR("epoll_ctl failed: %s\n", strerror(errno));
+    }
+可以看到，就是通过这句把套接字接收端描述符加到监听队列。 注册好信号处理函数好。下面加载default property. 
+
+#define PROP_PATH_RAMDISK_DEFAULT  "/default.prop"
+#define PROP_PATH_SYSTEM_BUILD     "/system/build.prop"
+#define PROP_PATH_VENDOR_BUILD     "/vendor/build.prop"
+#define PROP_PATH_LOCAL_OVERRIDE   "/data/local.prop"
+#define PROP_PATH_FACTORY          "/factory/factory.prop"
+
+那这个default.prop是哪来的呢？ 是编译的时候产生的。
+
+这就是个文本文件，就是在这个函数中开始解释的。
+static void load_properties(char *data, const char *filter)
+
+就是一行一行的读，判断# import =等关键字， 通过=读取 key value，然后通过 property_set(key, value);设置进去。我们看到这里加载default.prop那其他的属性文件在哪加载的呢？ 后续我们说。
+
+再往下就是启动property service 
+
+ property_set(key, value); 这个是什么东西？ 要知道我们的 property的原则是 共享空间只用来读，但是写需要通过init进程来写。这就是为了权限管理。通过init来把握权限，那边的进程要写属性。如何通知
+ init进程呢？
+ 
+ 通过socket来进程间通信。
+ void start_property_service() {
+    property_set_fd = create_socket(PROP_SERVICE_NAME, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                                    0666, 0, 0, NULL);
+    if (property_set_fd == -1) {
+        ERROR("start_property_service socket creation failed: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    listen(property_set_fd, 8);
+
+    register_epoll_handler(property_set_fd, handle_property_set_fd);
+}
+这里我们可以看到创建了socket. 监听套接字。并且把这个接受套接字加到了监听队列。我们可以在dev中看到这个socket.
+srw-rw-rw- root     root              1970-01-02 18:54 property_service
+
+下面进入开始解释rc配置文件了。这里很复杂。要仔细。
+
+以上是进程初始化的部分。
+
+
+
+
+    

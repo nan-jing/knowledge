@@ -1,0 +1,289 @@
+先贴一个重要结构,位于uboot/include/command.h,这个结构代表每个uboot命令
+struct cmd_tbl_s {
+   char     *name;   /* Command Name       */
+   int      maxargs;    /* maximum number of arguments*/
+   int      repeatable;/* autorepeat allowed?   */
+                   /* Implementation function  */
+   int      (*cmd)(struct cmd_tbl_s *, int, int, char *[]);
+   char     *usage;     /* Usage message   (short)简短用法信息*/
+#ifdefCFG_LONGHELP
+   char     *help;   /* Help  message   (long) 长的帮助信息*/
+#endif
+#ifdef CONFIG_AUTO_COMPLETE
+                   /* do auto completion on the arguments */
+   int  (*complete)(intargc, char *argv[], charlast_char, intmaxv, char *cmdv[]);
+#endif
+};
+ 
+typedef struct cmd_tbl_s    cmd_tbl_t;
+============================================================
+ 
+uboot的第一阶段:硬件相关初始化
+0.reset 执行arm920t/start.s  过程如下
+1.设置cpu svc管理模式
+2.关看门狗中断,mmu等
+3.设置时钟,sdram,外部总线
+4.代码重定位,搬运代码,从flash到sdram
+5.设置栈,bss段清零, bss用于未初始化的全局变量和静态变量
+6.ldr pc, _start_armboot
+   即进入uboot启动的第二阶段,调用c函数start_armboot()
+ 
+从start_armboot 开始
+经过一系列外设初始化
+比如
+falsh_init
+nand_init
+...
+最后循环调用mian_loop()
+main_loop主要流程
+{
+   1. 生成环境变量mtdparts, 调用mtdparts_init
+   2. 在启动过程中
+      若无空格键按下则boot_zImage,即run_command(getenv("bootcmd"),0)
+      有空格键按下则 run_command("menu",0)
+   3. shell过程，读取用户的输入并执行相应的命令
+      {
+         从控制台获得命令，保存在全局变量comsole_buffer中
+         解析命令行字符串,分割命令与参数,最后执行 run_command(...);
+      }                    
+}
+ 
+也就是说在mian_loop中,是处理环境变量和控制台人机交互,
+mian_loop调用readline ()读取命令行到console_buffer，
+再把console_buffer复制到lastcommand中去，
+还要设置flag，最后调用run_command (lastcommand, flag)函数,
+run_command (lastcommand, flag)函数中，首先定义cmd_tbl_t *cmdtp，再解析命令行。
+再调用find_cmd(argv[0])函数，其中argv[0]应该是命令本身，参数已经被剥离，
+这个函数返回的是一个cmd_tbl_t结构体，
+就是说每个命令都有一个cmd_tbl_t结构体相对应,关于run_command函数后面再分析
+ 
+mian_loop中有
+#define CONFIG_BOOTDELAY 3  //设置启动延时时间
+//如果延时大于等于零，并且没有在延时过程中接收到按键，则引导内核
+if (bootdelay >= 0 && s && !abortboot (bootdelay)) { //
+# ifdef CONFIG_AUTOBOOT_KEYED
+      intprev = disable_ctrlc(1);/* disable Control C checking */
+# endif   //状态设置
+ 
+# ifndef CFG_HUSH_PARSER
+        {
+             printf("Booting Linux ...\n");       //启动 linux   
+         run_command (s, 0);  //运行引导内核的命令,s=getenv("bootcmd")           
+        }
+ 
+加载linux内核时将使用变量“bootcmd”和 “bootargs”,
+变量“bootcmd”和 “bootargs”的值可以在在加载linux内核前，
+uboot的命令控制台中进行修改
+ 
+bootcmd=nand read.jffs2 0x30007FC0 kernel; bootm 0x30007FC0
+第一条命令  从flash上读出内核   kernel是一个分区标志
+第二条命令  启动命令指示了启动地址
+ 
+而bootargs是其它参数信息
+而 run_command (getenv ("bootcmd"), flag)
+ 
+bootcmd中的bootm,即boot application image from memory
+参数形式:"bootm addr"
+当addr省略的时候bootm加载默认的配置宏
+#define CONFIG_SYS_LOAD_ADDR  0x30008000  /* default load address */
+ 
+uboot中,"bootm"命令的执行函数为do_bootm(),这个是由U_BOOT_CMD绑定的函数指针,
+在do_bootm()中执行了do_bootm_linux(),
+do_bootm_linux()函数中获取了"bootargs"环境变量的值,最终将此值传递给linux内核,
+并调用theKernel函数,完成对linux内核的加载启动
+ 
+linux内核的启动,主要就是执行环境变量bootcmd和bootargs所定义的命令.
+============================================================
+ 
+uboot的核心功能是用run_command()来执行的
+run_command是怎么实现的?
+ 
+int run_command (const char *cmd, intflag)
+{
+   cmd_tbl_t *cmdtp;
+   charcmdbuf[CFG_CBSIZE];    /* working copy of cmd      */
+   char *token;          /* start of token in cmdbuf*/
+   char *sep;               /* end of token (separator) in cmdbuf */
+   charfinaltoken[CFG_CBSIZE];
+   char *str = cmdbuf;
+   char *argv[CFG_MAXARGS + 1];   /* NULL terminated*/
+   intargc, inquotes;
+   intrepeatable = 1;
+   intrc = 0;
+   ...
+   if ((cmdtp = find_cmd(argv[0])) == NULL) {
+         printf ("Unknown command '%s' - try 'help'\n", argv[0]);
+         rc = -1;/* give up after bad command */
+         continue;
+      }
+   ...
+   if ((cmdtp->cmd) (cmdtp, flag, argc, argv) != 0) {
+      rc = -1;
+   }
+   ...
+}
+ 
+run_command(...)    //流程解析
+{
+   1. 对\;解析,分割出一个个命令
+   2. 然后对每一个完整的命令执行
+     {
+      parse_line
+      {
+         line是整条的命令行bootcmd的值
+         例如line = nand read.jffs2 0x30007FC0 kernel; bootm 0x30007FC0
+         先去掉开头的空格,
+         然后对命令进行解析，找到空格之后将空格替换为\0，这样解析出命令和参数
+      }
+ 
+      find_cmd(argv[0])
+      {
+         从 __u_boot_cmd_start 到 __u_boot_cmd_end 的array进行遍历,
+         从找到的cmd_tbl_t中,字符串寻找cmdtp->name与argv[0]相同的命令
+      }
+      找到匹配的命令后，调用cmd_tbl_t->cmd执行
+     }
+}
+ 
+run_command函数中的parse_line函数主要代码如下
+int parse_line (char *line, char *argv[])
+{
+   ...
+   while ((*line == ' ') || (*line == '\t'))
+   {
+      ++line;
+   }
+   ...
+}
+============================================================
+run_command函数中的find_cmd()
+cmd_tbl_t *find_cmd (const char *cmd)
+{
+   cmd_tbl_t *cmdtp;
+   cmd_tbl_t *cmdtp_temp = &__u_boot_cmd_start;   /*Init value */
+   const char *p;
+   intlen;
+   intn_found = 0;
+ 
+   /*
+    * Some commands allow length modifiers (like "cp.b");
+    * compare command name only until first dot.
+    */
+   len = ((p = strchr(cmd, '.')) == NULL) ? strlen (cmd) : (p - cmd);
+ 
+   for (cmdtp  = &__u_boot_cmd_start;
+        cmdtp != &__u_boot_cmd_start;
+        cmdtp++) {
+      if (strncmp (cmd, cmdtp->name, len) == 0) {
+         if (len == strlen (cmdtp->name))
+            return cmdtp;   /* full match */
+         //如果名字匹配,就返回这个结构体,否则比较下一个
+         cmdtp_temp = cmdtp;   /* abbreviated command ? */
+         n_found++;
+      }
+   }
+ 
+   if (n_found == 1) {         /* exactly one match */
+      return cmdtp_temp;
+   }
+ 
+   return NULL;/* not found or ambiguous command */
+}
+ 
+其中__u_boot_cmd_start和__u_boot_cmd_start是怎么来的?
+查找发现只有在command.h中有声明
+extern cmd_tbl_t  __u_boot_cmd_start;
+extern cmd_tbl_t  __u_boot_cmd_end;
+ 
+而__u_boot_cmd_start是在链接脚本uboot.lds里面定义的
+ 
+   . = .;
+   __u_boot_cmd_start = .;
+   .u_boot_cmd : { *(.u_boot_cmd) }  //所有u_boot_cmd宏命令都保存在这个段
+   __u_boot_cmd_end = .;
+ 
+在command.h中有
+#define Struct_Section  __attribute__ ((unused,section (".u_boot_cmd")))
+ 
+#define U_BOOT_CMD(name,maxargs,rep,cmd,usage,help) \
+cmd_tbl_t __u_boot_cmd_##name Struct_Section = {#name, maxargs, rep, cmd, usage, help}
+ 
+ 
+搜索到在cmd_bootm.c中有 U_BOOT_CMD的实参
+U_BOOT_CMD(
+   bootm,CFG_MAXARGS,1,do_bootm,
+   "bootm   - boot application image from memory\n",
+   "[addr [arg ...]]\n    - boot application image stored in memory\n"
+   "\tpassing arguments 'arg ...'; when booting a Linux kernel,\n"
+   "\t'arg' can be the address of an initrd image\n"
+#ifdef CONFIG_OF_FLAT_TREE
+   "\tWhen booting a Linux kernel which requires a flat device-tree\n"
+   "\ta third argument is required which is the address of the of the\n"
+   "\tdevice-tree blob. To boot that kernel without an initrd image,\n"
+   "\tuse a '-' for the second argument. If you do not pass a third\n"
+   "\ta bd_info struct will be passed instead\n"
+#endif
+);
+ 
+将这个宏展开并替换
+#define U_BOOT_CMD(name,maxargs,rep,cmd,usage,help) \
+cmd_tbl_t __u_boot_cmd_bootm __attribute__ ((unused,section (".u_boot_cmd"))) =
+{"bootm", CFG_MAXARGS, 1, do_bootm, "bootm   - boot application image from memory\n", "阴影部分"}
+参数说明---------------
+名称:bootm
+将段属性设置为: .u_boot_cmd
+最大参数个数:CFG_MAXARGS
+是否可重复:1 , 可重复,即下一次按回车时可重复执行
+cmd对应do_bootm,这是在cmd_tblt_t中定义的函数指针,命令就是在这个函数中实现
+usage:使用概要 "bootm   - boot application image from memory\n"
+help:详细帮助:那一大段阴影部分
+ 
+ 
+ 
+总结:
+每个U_BOOT_CMD宏组成的命令实质上是一个个cmd_tbl_t结构,
+它们在链接时全部被定位保存到__u_boot_cmd_start起始地址开始的段中,也就是.u_boot_cmd段中.
+ 
+当上电后,若启动的是默认的linux内核,执行run_command (getenv ("bootcmd"), flag),
+由bootcmd字串中得知bootm,bootm的执行函数是do_bootm(),
+在do_bootm()中执行了do_bootm_linux(...),
+do_bootm_linux()函数中获取了"bootargs"环境变量的值,
+最终将此值传递给linux内核,并调用theKernel函数,完成对linux内核的加载启动
+ 
+当上电后,若用户按空格并输入命令,先同样执行run_command函数,调用find_cmd遍历每一个cmd_tbl_t结构,
+比较cmdtp->name,当名称匹配时,就通过cmd_tbl_t结构的(*cmd)(...)函数指针来执行命令功能,
+即执行cmd_tbl_t->cmd
+ 
+============================================================
+ 
+                                      添加uboot命令
+在uboot/include/configs/xxx.h文件中，添加#define CONFIG_CMD_MYCMD 启用我们的自定义命令
+也可以在uboot/include/config_cmd_default.h文件中添加,不过这个define在这里不是必须的
+ 
+在common目录,命令都是在cmd_xxx.c文件中实现的,这个是命名规范,必须是cmd_xxx.c形式,
+所以我们在common目录新建一个文件cmd_myCmd.c
+ 
+#include <common.h>
+#include <command.h>
+ 
+#ifdef CONFIG_CMD_MYCMD
+int do_myCmd(cmd_tbl_t *cmdtp, intflag, intargc, char *argv[])
+{
+   printf("Hello,this is myCmd test\n");
+   return 0;
+}
+ 
+U_BOOT_CMD(
+  myTest, 1, 1,  do_myCmd,
+  "myTest - 123456myCmd.  \n",
+  "myTest - longHelp_abcdefgmyCmd ...\n"
+);
+#endif
+ 
+U_BOOT_CMD这里3个myTest 写法最好一致,为什么?
+第一个myTest是uboot命令
+第二个myTest是在命令行输入help时输出的概要信息
+第三个myTest是当输入help myTest的时候显示的详细信息
+ 
+最后,修改common下的Makefile文件，将cmd_myCmd.o加入编译
+ 
